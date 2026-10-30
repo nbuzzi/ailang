@@ -80,7 +80,7 @@ fn eval_stage(
             let items = input_to_list(input);
             let mut results = Vec::new();
             for item in items {
-                if eval_expr(expr, &item)?.is_truthy() {
+                if eval_expr(expr, &item, ctx)?.is_truthy() {
                     results.push(item);
                 }
             }
@@ -93,7 +93,7 @@ fn eval_stage(
             for item in items {
                 let mut obj = HashMap::new();
                 for (key, expr) in &map_expr.fields {
-                    obj.insert(key.clone(), eval_expr(expr, &item)?);
+                    obj.insert(key.clone(), eval_expr(expr, &item, ctx)?);
                 }
                 results.push(Value::Object(obj));
             }
@@ -125,11 +125,9 @@ fn eval_call(
     ctx: &mut Context,
     rt: &tokio::runtime::Handle,
 ) -> AilangResult<Vec<Value>> {
-    // Evaluate arguments
-    let dummy = Value::Null;
     let arg_input = input.clone().unwrap_or(Value::Null);
     let args: Vec<Value> = call.args.iter()
-        .map(|expr| eval_expr(expr, &arg_input))
+        .map(|expr| eval_expr(expr, &arg_input, ctx))
         .collect::<AilangResult<Vec<_>>>()?;
 
     stdlib::dispatch(&call.name, &args, input, rt)
@@ -138,7 +136,7 @@ fn eval_call(
 fn eval_keyword(
     kw: &str,
     input: Option<Value>,
-    rt: &tokio::runtime::Handle,
+    _rt: &tokio::runtime::Handle,
 ) -> AilangResult<Vec<Value>> {
     match kw {
         "json" => {
@@ -279,14 +277,8 @@ fn eval_keyword(
         "unique" => ailang_stdlib::data::unique(input),
 
         "write" => {
-            // bare `write` — write stream back to the source file path
-            // Only works when input is a FileEntry
             match input {
-                Some(Value::FileEntry(fe)) => {
-                    // nothing to write without content — this is a no-op here
-                    // real use: glob | sed | write — sed produces Str
-                    Ok(vec![Value::FileEntry(fe)])
-                }
+                Some(Value::FileEntry(fe)) => Ok(vec![Value::FileEntry(fe)]),
                 Some(Value::Str(s)) => Ok(vec![Value::Str(s)]),
                 other => Ok(other.into_iter().collect()),
             }
@@ -297,13 +289,24 @@ fn eval_keyword(
 }
 
 /// Evaluate an expression against a current item value
-pub fn eval_expr(expr: &Expr, current: &Value) -> AilangResult<Value> {
+pub fn eval_expr(expr: &Expr, current: &Value, ctx: &Context) -> AilangResult<Value> {
     match expr {
         Expr::Null       => Ok(Value::Null),
         Expr::Bool(b)    => Ok(Value::Bool(*b)),
         Expr::Int(i)     => Ok(Value::Int(*i)),
         Expr::Float(f)   => Ok(Value::Float(*f)),
         Expr::Str(s)     => Ok(Value::Str(s.clone())),
+
+        Expr::Var(name) => {
+            if let Some(vals) = ctx.get(name) {
+                match vals.as_slice() {
+                    [single] => Ok(single.clone()),
+                    _ => Ok(Value::List(vals.clone())),
+                }
+            } else {
+                Err(AilangError::UnknownVariable(name.clone()))
+            }
+        }
 
         Expr::Field(parts) => {
             let mut val = current.clone();
@@ -346,13 +349,13 @@ pub fn eval_expr(expr: &Expr, current: &Value) -> AilangResult<Value> {
         }
 
         Expr::Not(inner) => {
-            let val = eval_expr(inner, current)?;
+            let val = eval_expr(inner, current, ctx)?;
             Ok(Value::Bool(!val.is_truthy()))
         }
 
         Expr::BinOp(lhs, op, rhs) => {
-            let lv = eval_expr(lhs, current)?;
-            let rv = eval_expr(rhs, current)?;
+            let lv = eval_expr(lhs, current, ctx)?;
+            let rv = eval_expr(rhs, current, ctx)?;
             eval_binop(&lv, op, &rv)
         }
 
@@ -389,7 +392,6 @@ fn compare_values(lhs: &Value, rhs: &Value, cmp: impl Fn(f64, f64) -> bool) -> A
         _ => {
             let ls = lhs.to_string();
             let rs = rhs.to_string();
-            // Map string comparison to a numeric result for the closure
             let ord = ls.cmp(&rs);
             let (a, b): (f64, f64) = match ord {
                 std::cmp::Ordering::Less    => (-1.0, 0.0),

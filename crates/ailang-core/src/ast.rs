@@ -53,6 +53,8 @@ pub enum Expr {
     Int(i64),
     Float(f64),
     Str(String),
+    /// Variable reference in expressions: $var
+    Var(String),
     /// Field path: .field or .nested.field
     Field(Vec<String>),
     /// Method call on field: .field.contains("x")

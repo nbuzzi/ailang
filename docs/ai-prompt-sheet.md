@@ -1,0 +1,76 @@
+# ailang AI Prompt Sheet
+
+Drop this compact cheatsheet into your LLM agent's system prompt to enable native, token-efficient scripting.
+
+---
+
+## ⚡ System Prompt Snippet (< 75 tokens)
+
+```
+AISL: pipe-based scripting runtime. Invoke: ailang "expr"
+fs: read(p) write(p) glob(pat) walk(d) cp(dst) mv(dst) rm exists(p) stat diff(a,b)
+text: grep(re) sed(re,r) lines count trim upper lower slice(n,m)
+data: json yaml csv map({k:.f}) filter(.f>v) sort(.f) group(.f) set(.f,v) unique assert(v)
+net: net.get(url) net.post(url,b) net.download(url,p)
+sys: exec(cmd,[args]) env(k) os arch pwd cd(p)
+crypto: sha256 sha512 md5 base64.enc base64.dec
+ops: | pipe  > write  >> append  ? filter  @ iterate  .field
+ex: glob("*.log")|grep("ERR")|map({f:.path,l:.line})>"out.json"
+```
+
+---
+
+## 🛠️ Function Reference
+
+### File System (`fs`)
+* `read(path)`: Reads entire file as string.
+* `write(path)` or `> path`: Writes stream/string to destination file (overwrite).
+* `>> path`: Appends to destination file.
+* `glob(pattern)`: Returns files matching pattern (supports `**/*`).
+* `walk(dir)`: Recursively traverses directory.
+* `cp(dest)`: Copies file or dir to destination.
+* `mv(dest)`: Moves/renames file or dir.
+* `rm(path)`: Removes file or directory recursively.
+* `exists(path)`: Returns boolean `true`/`false`.
+* `stat(path)`: Returns object with size, ext, name, is_dir.
+* `diff(a, b)`: Produces unified line-by-line diff.
+
+### Text (`text`)
+* `grep(regex)`: Filters lines/items matching regex pattern.
+* `sed(regex, replacement)`: Replaces regex matches in input.
+* `lines`: Splits string into list of lines.
+* `count`: Returns total count of items or lines.
+* `trim`: Strips leading and trailing whitespace.
+* `upper`: Converts string to uppercase.
+* `lower`: Converts string to lowercase.
+* `slice(start, end)`: Slices list or characters.
+
+### Structured Data (`data`)
+* `json`: Parses JSON string or serializes value to JSON.
+* `yaml`: Parses YAML string or serializes value to YAML.
+* `csv`: Parses CSV into list of key-value objects.
+* `map({k: .field, ...})`: Projects objects into new structure.
+* `filter(.field > value)`: Filters items by predicate.
+* `sort(.field)`: Sorts collection by field or value.
+* `group(.field)`: Groups collection into map keyed by field.
+* `set(.field, value)`: Updates or sets field on object.
+* `unique`: Deduplicates elements in list.
+* `assert(expected)`: Asserts input equals expected value; fails with structured error if not.
+
+### Networking (`net`)
+* `net.get(url)`: Performs HTTP GET request and returns body.
+* `net.post(url, body)`: Performs HTTP POST request.
+* `net.download(url, path)`: Streams remote file directly to disk.
+
+### System (`sys`)
+* `exec(command, [args])`: Spawns command and returns stdout.
+* `env(var_name)`: Returns value of environment variable.
+* `pwd()`: Returns current working directory.
+* `cd(path)`: Changes working directory.
+
+### Cryptography (`crypto`)
+* `sha256`: Computes SHA-256 hash.
+* `sha512`: Computes SHA-512 hash.
+* `md5`: Computes MD5 hash.
+* `base64.enc`: Encodes input string as Base64.
+* `base64.dec`: Decodes Base64 string.

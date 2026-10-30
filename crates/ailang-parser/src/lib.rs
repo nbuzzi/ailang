@@ -104,7 +104,14 @@ impl Parser {
                 Ok(Stage::Var(name))
             }
 
-            // filter(expr) — parsed as a special Call with one Expr arg
+            // Filter shorthand: ? expr
+            Some(Token::Question) => {
+                self.advance();
+                let expr = self.parse_expr()?;
+                Ok(Stage::Filter(expr))
+            }
+
+            // filter(expr) — parsed as a Stage::Filter with an Expr
             Some(Token::Filter) => {
                 self.advance();
                 self.expect(&Token::LParen)?;
@@ -236,10 +243,23 @@ impl Parser {
     }
 
     fn parse_string_arg(&mut self) -> AilangResult<String> {
-        match self.advance() {
-            Some(Token::Str(s)) => Ok(s),
+        match self.peek().cloned() {
+            Some(Token::Str(s)) => {
+                self.advance();
+                Ok(s)
+            }
+            Some(Token::Ident(_)) => {
+                let mut path = self.expect_ident()?;
+                while matches!(self.peek(), Some(Token::Dot)) {
+                    self.advance();
+                    let ext = self.expect_ident()?;
+                    path.push('.');
+                    path.push_str(&ext);
+                }
+                Ok(path)
+            }
             other => Err(AilangError::ParseError {
-                msg: format!("Expected string, got {:?}", other),
+                msg: format!("Expected string or path, got {:?}", other),
             }),
         }
     }
@@ -314,6 +334,7 @@ impl Parser {
             Some(Token::Int(i))     => { self.advance(); Ok(Expr::Int(i)) }
             Some(Token::Float(f))   => { self.advance(); Ok(Expr::Float(f)) }
             Some(Token::Str(s))     => { self.advance(); Ok(Expr::Str(s)) }
+            Some(Token::Var(v))     => { self.advance(); Ok(Expr::Var(v)) }
             Some(Token::Bang) => {
                 self.advance();
                 let inner = self.parse_primary()?;
@@ -345,6 +366,17 @@ impl Parser {
                     Ok(Expr::Field(parts))
                 }
             }
+            // Identifiers / unquoted paths like README or README.md
+            Some(Token::Ident(_)) => {
+                let mut s = self.expect_ident()?;
+                while matches!(self.peek(), Some(Token::Dot)) {
+                    self.advance();
+                    let ext = self.expect_ident()?;
+                    s.push('.');
+                    s.push_str(&ext);
+                }
+                Ok(Expr::Str(s))
+            }
             other => Err(AilangError::ParseError {
                 msg: format!("Unexpected token in expression: {:?}", other),
             }),
@@ -368,6 +400,12 @@ mod tests {
     fn test_parse_simple_call() {
         let ast = parse(r#"read("config.yaml")"#).unwrap();
         assert_eq!(ast.stages.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_unquoted_path() {
+        let ast = parse("read(README.md) | lines | count").unwrap();
+        assert_eq!(ast.stages.len(), 3);
     }
 
     #[test]
