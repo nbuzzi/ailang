@@ -16,11 +16,16 @@ pub fn dispatch(
     rt: &tokio::runtime::Handle,
 ) -> AilangResult<Vec<Value>> {
     match name {
-        // ── fs ─────────────────────────────────────────────────────────────
+        // ── fs & Compound AI Macros ─────────────────────────────────────────
         "read"          => fs::read(args, input),
         "write"         => fs::write(args, input),
         "glob"          => fs::glob(args, input),
         "walk"          => fs::walk(args, input),
+        "search"        => fs::search(args, input),
+        "tree"          => fs::tree(args, input),
+        "head"          => fs::head(args, input),
+        "tail"          => fs::tail(args, input),
+        "lines"         => fs::lines_cmd(args, input),
         "cp"            => fs::cp(args, input),
         "mv"            => fs::mv(args, input),
         "rm"            => fs::rm(args, input),

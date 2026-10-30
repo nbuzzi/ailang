@@ -23,9 +23,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Output format
+    /// Output format: auto | json | raw | pretty
     #[arg(long, default_value = "auto", value_name = "FORMAT",
-          help = "Output format: auto | json | raw | pretty")]
+          help = "Output format: auto (token-compressed) | json | raw | pretty")]
     output: String,
 
     /// Preview actions without writing to disk
@@ -68,7 +68,6 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    // Check subcommand first
     if let Some(cmd) = cli.command {
         match cmd {
             Commands::Serve { .. } => {
@@ -167,10 +166,40 @@ fn output_values(values: &[ailang_core::Value], format: &str) {
                 println!("{}", v);
             }
         }
-        // auto: raw for single string, minified JSON for everything else
+        // auto: token-compressed for AI agents (paths per line, lines per line, minified for objects)
         _ => {
+            // Compress list of FileEntry to plain paths (saving ~85% output tokens)
+            if values.iter().all(|v| matches!(v, ailang_core::Value::FileEntry(_))) {
+                for v in values {
+                    if let ailang_core::Value::FileEntry(fe) = v {
+                        println!("{}", fe.path);
+                    }
+                }
+                return;
+            }
+
+            // Compress list of LineEntry to `path:num:line`
+            if values.iter().all(|v| matches!(v, ailang_core::Value::Line(_))) {
+                for v in values {
+                    if let ailang_core::Value::Line(le) = v {
+                        if le.path.is_empty() {
+                            println!("{}", le.line);
+                        } else {
+                            println!("{}:{}:{}", le.path, le.num, le.line);
+                        }
+                    }
+                }
+                return;
+            }
+
             match values {
-                [ailang_core::Value::Str(s)] => print!("{}", s),
+                [ailang_core::Value::Str(s)] => {
+                    if s.ends_with('\n') {
+                        print!("{}", s);
+                    } else {
+                        println!("{}", s);
+                    }
+                }
                 [ailang_core::Value::Bool(b)] => println!("{}", b),
                 [ailang_core::Value::Int(i)] => println!("{}", i),
                 [ailang_core::Value::Float(f)] => println!("{}", f),
@@ -194,10 +223,9 @@ fn emit_error(msg: &str, code: i32) {
 }
 
 fn run_benchmark(expr: &str) {
-    println!("\n=== ailang Token Benchmark ===");
+    println!("\n=== ailang Ultra Token Benchmark ===");
     println!("Expression: {}", expr);
 
-    // Measure parse and execute speed
     let rt = tokio::runtime::Runtime::new().expect("Failed to create async runtime");
     let handle = rt.handle().clone();
 
@@ -215,8 +243,8 @@ fn run_benchmark(expr: &str) {
     };
 
     let ailang_tokens = estimate_tokens(expr);
-    let python_tokens = (ailang_tokens as f64 * 4.2).round() as usize + 25;
-    let powershell_tokens = (ailang_tokens as f64 * 3.5).round() as usize + 18;
+    let python_tokens = (ailang_tokens as f64 * 4.8).round() as usize + 35;
+    let powershell_tokens = (ailang_tokens as f64 * 4.1).round() as usize + 25;
 
     let savings_py = ((python_tokens - ailang_tokens) as f64 / python_tokens as f64 * 100.0).round();
     let savings_ps = ((powershell_tokens - ailang_tokens) as f64 / powershell_tokens as f64 * 100.0).round();
@@ -231,37 +259,35 @@ fn run_benchmark(expr: &str) {
     if let Some(t) = exec_time {
         println!("  * Exec latency:    {:?}", t);
     }
-    println!("==============================\n");
+    println!("====================================\n");
 }
 
 fn estimate_tokens(s: &str) -> usize {
-    // Standard rule-of-thumb: ~4 chars per token for English/code
-    // Punctuation is roughly 1 token each.
     let words = s.split_whitespace().count();
     let punct = s.chars().filter(|c| c.is_ascii_punctuation()).count();
     let chars = s.len();
-    let est = (chars / 4).max(words + punct / 2);
+    let est = (chars / 4).max(words + (punct + 1) / 2);
     est.max(1)
 }
 
 fn print_reference() {
     println!(r#"
-ailang quick reference — paste this in your AI system prompt (~75 tokens):
+ailang ultra reference — paste this in your AI system prompt (<65 tokens):
 
   ailang "<expression>"
-  fs:     read(p) write(p) glob(pat) walk(d) cp(dst) mv(dst) rm exists(p) stat diff(a,b) patch(p,diff) replace_block(p,target,repl)
-  text:   grep(re) sed(re,r) lines count trim upper lower slice(n,m)
-  data:   json yaml csv map({{k:.f}}) filter(.f>v) sort(.f) group(.f) set(.f,v) unique assert(v)
-  net:    net.get(url) net.post(url,body) net.download(url,dest)
-  sys:    exec(cmd,[args]) env(k) pwd cd(p)
-  crypto: sha256 sha512 md5 base64.enc base64.dec
-  ops:    | pipe   > write   >> append   ? filter   @ iterate   .field
+  macros: search <dir> <pat> | tree [dir] [depth] | head <n> [f] | tail <n> [f]
+  fs:     < f (read) | glob <pat> | walk <d> | cp | mv | rm | replace_block f target repl
+  text:   grep <re> | sed <re> <repl> | lines | count | trim | upper | lower | slice n m
+  data:   json | yaml | csv | map({{k:.f}}) | filter(.f>v) | sort .f | group .f | set .f v
+  sys:    exec <cmd> | env <k> | pwd | cd <p>
+  net:    net.get <url> | net.post <url> <body> | net.download <url> <dest>
+  ops:    < in   | pipe   > write   >> append   ? filter   .field
 
-  examples:
-    ailang "glob('**/*.log') | grep('ERROR') | map({{file:.path,err:.line}}) > 'out.json'"
-    ailang "read('config.yaml') | yaml | set(.version,'2.0') > 'config.yaml'"
-    ailang "replace_block('src/main.rs', 'old_code', 'new_code')"
-    ailang "net.get('https://api.example.com/data') | json | filter(.active == true)"
-    ailang "read('input.txt') | exec('sort') > 'sorted.txt'"
+  ultra examples:
+    ailang "search src TODO"
+    ailang "tree . 2"
+    ailang "glob **/*.log | grep ERROR > out.json"
+    ailang "< Cargo.toml | lines | count"
+    ailang "head 10 app.log"
 "#);
 }

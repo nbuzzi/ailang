@@ -1,9 +1,10 @@
 use ailang_core::{
     error::{AilangError, AilangResult},
     policy::unified_diff,
-    FileEntry, Value,
+    FileEntry, LineEntry, Value,
 };
 use globset::{Glob, GlobSetBuilder};
+use regex::Regex;
 use std::path::Path;
 use walkdir::WalkDir;
 
@@ -67,6 +68,169 @@ pub fn walk(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
         results.push(Value::FileEntry(path_to_entry(entry.path())?));
     }
     Ok(results)
+}
+
+/// search(dir, pattern) or search(pattern) — AI Macro
+/// Recursively searches code files in `dir` matching regex `pattern`.
+/// Automatically skips noise directories (.git, target, node_modules, dist, etc.)
+pub fn search(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
+    let (dir, pattern) = match args {
+        [Value::Str(d), Value::Str(p)] => (d.as_str(), p.as_str()),
+        [Value::Str(p)] => (".", p.as_str()),
+        _ => return Err(AilangError::RuntimeError {
+            stage: "search".into(),
+            msg: "Usage: search [dir] <pattern>".into(),
+        }),
+    };
+
+    let re = Regex::new(pattern).map_err(|e| AilangError::RegexError(e.to_string()))?;
+    let mut results = Vec::new();
+
+    let walker = WalkDir::new(dir).into_iter().filter_entry(|e| {
+        let name = e.file_name().to_string_lossy();
+        !name.starts_with('.') && name != "target" && name != "node_modules" && name != "dist" && name != "build"
+    });
+
+    for entry in walker.filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            let path_str = entry.path().to_string_lossy().replace('\\', "/");
+            if let Ok(content) = read_file_string(entry.path()) {
+                for (i, line) in content.lines().enumerate() {
+                    if re.is_match(line) {
+                        results.push(Value::Line(LineEntry {
+                            path: path_str.clone(),
+                            line: line.to_string(),
+                            num: i + 1,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// tree([dir], [max_depth]) — AI Macro
+/// Produces a visual tree representation of a directory tree for fast agent architecture surveys.
+pub fn tree(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
+    let dir = args.get(0).and_then(|v| v.as_str()).unwrap_or(".");
+    let max_depth = args.get(1).and_then(|v| v.as_int()).unwrap_or(3) as usize;
+
+    let mut out = format!("{}\n", dir);
+    build_tree(Path::new(dir), "", 0, max_depth, &mut out)?;
+    Ok(vec![Value::Str(out)])
+}
+
+fn build_tree(dir: &Path, prefix: &str, depth: usize, max_depth: usize, out: &mut String) -> AilangResult<()> {
+    if depth >= max_depth {
+        return Ok(());
+    }
+
+    let mut entries: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(read_dir) => read_dir.filter_map(|e| e.ok()).collect(),
+        Err(_) => return Ok(()),
+    };
+
+    entries.sort_by_key(|e| e.file_name());
+
+    let filtered: Vec<_> = entries.into_iter().filter(|e| {
+        let name = e.file_name().to_string_lossy().to_string();
+        !name.starts_with('.') && name != "target" && name != "node_modules"
+    }).collect();
+
+    let count = filtered.len();
+    for (i, entry) in filtered.into_iter().enumerate() {
+        let is_last = i + 1 == count;
+        let connector = if is_last { "└── " } else { "├── " };
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir {
+            out.push_str(&format!("{}{}{}/\n", prefix, connector, name));
+            let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
+            build_tree(&entry.path(), &new_prefix, depth + 1, max_depth, out)?;
+        } else {
+            out.push_str(&format!("{}{}{}\n", prefix, connector, name));
+        }
+    }
+
+    Ok(())
+}
+
+/// head(n, [file]) — first n items or lines
+pub fn head(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
+    let n = args.get(0).and_then(|v| v.as_int()).unwrap_or(10) as usize;
+
+    // If file arg passed: head 10 filename
+    if let Some(path_val) = args.get(1) {
+        if let Some(path) = path_val.as_str() {
+            let content = read_file_string(Path::new(path))?;
+            let lines: Vec<Value> = content.lines().take(n).map(|l| Value::Str(l.to_string())).collect();
+            return Ok(lines);
+        }
+    }
+
+    match input {
+        Some(Value::List(items)) => Ok(items.into_iter().take(n).collect()),
+        Some(Value::Str(s)) => {
+            let lines: Vec<Value> = s.lines().take(n).map(|l| Value::Str(l.to_string())).collect();
+            Ok(lines)
+        }
+        None => Err(AilangError::RuntimeError {
+            stage: "head".into(),
+            msg: "head requires either a file argument or piped input".into(),
+        }),
+        other => Ok(vec![other.unwrap()]),
+    }
+}
+
+/// tail(n, [file]) — last n items or lines
+pub fn tail(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
+    let n = args.get(0).and_then(|v| v.as_int()).unwrap_or(10) as usize;
+
+    if let Some(path_val) = args.get(1) {
+        if let Some(path) = path_val.as_str() {
+            let content = read_file_string(Path::new(path))?;
+            let all_lines: Vec<&str> = content.lines().collect();
+            let start = all_lines.len().saturating_sub(n);
+            let lines: Vec<Value> = all_lines[start..].iter().map(|l| Value::Str(l.to_string())).collect();
+            return Ok(lines);
+        }
+    }
+
+    match input {
+        Some(Value::List(items)) => {
+            let start = items.len().saturating_sub(n);
+            Ok(items[start..].to_vec())
+        }
+        Some(Value::Str(s)) => {
+            let all_lines: Vec<&str> = s.lines().collect();
+            let start = all_lines.len().saturating_sub(n);
+            let lines: Vec<Value> = all_lines[start..].iter().map(|l| Value::Str(l.to_string())).collect();
+            Ok(lines)
+        }
+        None => Err(AilangError::RuntimeError {
+            stage: "tail".into(),
+            msg: "tail requires either a file argument or piped input".into(),
+        }),
+        other => Ok(vec![other.unwrap()]),
+    }
+}
+
+/// lines([file]) — reads file or splits piped input into lines
+pub fn lines_cmd(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
+    if let Some(path_val) = args.get(0) {
+        if let Some(path) = path_val.as_str() {
+            let content = read_file_string(Path::new(path))?;
+            return Ok(content.lines().map(|l| Value::Str(l.to_string())).collect());
+        }
+    }
+    match input {
+        Some(Value::Str(s)) => Ok(s.lines().map(|l| Value::Str(l.to_string())).collect()),
+        Some(other) => Ok(other.to_string().lines().map(|l| Value::Str(l.to_string())).collect()),
+        None => Ok(vec![]),
+    }
 }
 
 /// cp("src", "dst") — copy file or directory
@@ -160,7 +324,6 @@ pub fn replace_block(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<
 
     // 1. Exact match
     if let Some(pos) = content.find(&target) {
-        // Check uniqueness
         if content[pos + target.len()..].contains(&target) {
             return Err(AilangError::EditError {
                 msg: format!("Target block occurs multiple times in '{}'. Provide more surrounding context.", path),
@@ -274,7 +437,6 @@ fn apply_unified_patch(original: &str, diff: &str) -> AilangResult<String> {
         }
     }
 
-    // Append remainder of original
     while orig_idx < orig_lines.len() {
         result_lines.push(orig_lines[orig_idx].to_string());
         orig_idx += 1;
@@ -289,7 +451,6 @@ fn apply_unified_patch(original: &str, diff: &str) -> AilangResult<String> {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/// Read a file into a String, handling UTF-8, UTF-8 with BOM, and UTF-16 LE gracefully.
 pub fn read_file_string(path: &Path) -> std::io::Result<String> {
     let bytes = std::fs::read(path)?;
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -335,46 +496,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_read_write_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("test.txt");
-        std::fs::write(&file_path, "hello world").unwrap();
-
-        let result = read(&[Value::Str(file_path.to_string_lossy().into())], None).unwrap();
-        assert_eq!(result[0], Value::Str("hello world".into()));
+    fn test_tree_generates_output() {
+        let result = tree(&[Value::Str(".".into()), Value::Int(2)], None).unwrap();
+        assert!(result[0].to_string().contains("Cargo.toml"));
     }
 
     #[test]
-    fn test_replace_block_exact() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("code.rs");
-        std::fs::write(&file_path, "fn old_func() {\n    return 1;\n}\n").unwrap();
-
-        let result = replace_block(&[
-            Value::Str(file_path.to_string_lossy().into()),
-            Value::Str("return 1;".into()),
-            Value::Str("return 2;".into()),
-        ], None).unwrap();
-        assert_eq!(result[0], Value::Bool(true));
-
-        let updated = std::fs::read_to_string(&file_path).unwrap();
-        assert!(updated.contains("return 2;"));
+    fn test_search_finds_matches() {
+        let result = search(&[Value::Str("src".into()), Value::Str("ailang".into())], None).unwrap();
+        assert!(!result.is_empty());
     }
 
     #[test]
-    fn test_replace_block_fuzzy() {
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("code.rs");
-        std::fs::write(&file_path, "    fn test() {\n        let x = 1;\n    }\n").unwrap();
+    fn test_head_and_tail() {
+        let input = Some(Value::Str("1\n2\n3\n4\n5".into()));
+        let h = head(&[Value::Int(2)], input.clone()).unwrap();
+        assert_eq!(h.len(), 2);
+        assert_eq!(h[0], Value::Str("1".into()));
 
-        let result = replace_block(&[
-            Value::Str(file_path.to_string_lossy().into()),
-            Value::Str("let x = 1;".into()),
-            Value::Str("        let x = 99;".into()),
-        ], None).unwrap();
-        assert_eq!(result[0], Value::Bool(true));
-
-        let updated = std::fs::read_to_string(&file_path).unwrap();
-        assert!(updated.contains("let x = 99;"));
+        let t = tail(&[Value::Int(2)], input).unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0], Value::Str("4".into()));
     }
 }

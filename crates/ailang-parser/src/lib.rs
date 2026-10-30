@@ -4,29 +4,38 @@ use ailang_core::{
 };
 use ailang_lexer::{tokenize, Token};
 
-/// Stateful parser — consumes a flat token stream and produces a Pipeline AST.
-pub struct Parser {
-    tokens: Vec<Token>,
+/// Stateful parser — consumes tokens with character spans for zero-loss command-style syntax.
+pub struct Parser<'a> {
+    input: &'a str,
+    tokens: Vec<(Token, std::ops::Range<usize>)>,
     pos: usize,
 }
 
-impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+impl<'a> Parser<'a> {
+    pub fn new(input: &'a str, tokens: Vec<(Token, std::ops::Range<usize>)>) -> Self {
+        Self { input, tokens, pos: 0 }
     }
 
     fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.pos)
+        self.tokens.get(self.pos).map(|(t, _)| t)
     }
 
-    fn advance(&mut self) -> Option<Token> {
+    fn peek_span(&self) -> Option<&std::ops::Range<usize>> {
+        self.tokens.get(self.pos).map(|(_, s)| s)
+    }
+
+    fn advance(&mut self) -> Option<(Token, std::ops::Range<usize>)> {
         if self.pos < self.tokens.len() {
-            let tok = self.tokens[self.pos].clone();
+            let item = self.tokens[self.pos].clone();
             self.pos += 1;
-            Some(tok)
+            Some(item)
         } else {
             None
         }
+    }
+
+    fn advance_token(&mut self) -> Option<Token> {
+        self.advance().map(|(t, _)| t)
     }
 
     fn expect(&mut self, expected: &Token) -> AilangResult<()> {
@@ -42,10 +51,19 @@ impl Parser {
     }
 
     fn expect_ident(&mut self) -> AilangResult<String> {
-        match self.advance() {
+        match self.advance_token() {
             Some(Token::Ident(s)) => Ok(s),
-            other => Err(AilangError::ParseError {
-                msg: format!("Expected identifier, got {:?}", other),
+            Some(tok) => {
+                if let Some(s) = tok.as_ident_like() {
+                    Ok(s)
+                } else {
+                    Err(AilangError::ParseError {
+                        msg: format!("Expected identifier, got {:?}", tok),
+                    })
+                }
+            }
+            None => Err(AilangError::ParseError {
+                msg: "Expected identifier, got EOF".into(),
             }),
         }
     }
@@ -63,16 +81,16 @@ impl Parser {
             stages.push(self.parse_stage()?);
         }
 
-        // Optional sink: > "path" or >> "path"
+        // Optional sink: > "path" or >> "path" (quoted or unquoted)
         let sink = match self.peek() {
             Some(Token::Write) => {
                 self.advance();
-                let path = self.parse_string_arg()?;
+                let path = self.parse_sink_path()?;
                 Some(Sink::Write(path))
             }
             Some(Token::Append) => {
                 self.advance();
-                let path = self.parse_string_arg()?;
+                let path = self.parse_sink_path()?;
                 Some(Sink::Append(path))
             }
             _ => None,
@@ -81,15 +99,41 @@ impl Parser {
         Ok(Pipeline { stages, sink })
     }
 
+    fn parse_sink_path(&mut self) -> AilangResult<String> {
+        match self.peek().cloned() {
+            Some(Token::Str(s)) => {
+                self.advance();
+                Ok(s)
+            }
+            Some(_) => {
+                // Collect contiguous tokens for unquoted path (e.g. out.json, dir/out.txt)
+                self.parse_contiguous_raw()
+            }
+            None => Err(AilangError::ParseError {
+                msg: "Expected destination path after redirection operator".into(),
+            }),
+        }
+    }
+
     fn parse_stage(&mut self) -> AilangResult<Stage> {
         match self.peek().cloned() {
+            // Stream input operator: `< filename` (shorthand for `read(filename)`)
+            Some(Token::Lt) => {
+                self.advance(); // consume '<'
+                let path_expr = self.parse_command_arg()?;
+                Ok(Stage::Call(Call {
+                    name: "read".into(),
+                    args: vec![path_expr],
+                }))
+            }
+
             // let binding: let x = pipeline
             Some(Token::Let) => {
                 self.advance();
                 let name = self.expect_ident()?;
-                // consume '='
-                match self.advance() {
-                    Some(Token::Eq) => {}
+                // consume '=' or '=='
+                match self.advance_token() {
+                    Some(Token::Assign) | Some(Token::Eq) => {}
                     other => return Err(AilangError::ParseError {
                         msg: format!("Expected '=' after let {}, got {:?}", name, other),
                     }),
@@ -114,51 +158,42 @@ impl Parser {
             // filter(expr) — parsed as a Stage::Filter with an Expr
             Some(Token::Filter) => {
                 self.advance();
-                self.expect(&Token::LParen)?;
-                let expr = self.parse_expr()?;
-                self.expect(&Token::RParen)?;
+                let expr = if matches!(self.peek(), Some(Token::LParen)) {
+                    self.advance();
+                    let e = self.parse_expr()?;
+                    self.expect(&Token::RParen)?;
+                    e
+                } else {
+                    self.parse_expr()?
+                };
                 Ok(Stage::Filter(expr))
             }
 
-            // sort(.field) — parsed as a Call
+            // sort(.field) or sort .field
             Some(Token::Sort) => {
                 self.advance();
-                let args = if matches!(self.peek(), Some(Token::LParen)) {
-                    self.advance();
-                    let args = self.parse_arg_list()?;
-                    self.expect(&Token::RParen)?;
-                    args
-                } else { vec![] };
+                let args = self.parse_call_args()?;
                 Ok(Stage::Call(Call { name: "sort".into(), args }))
             }
 
-            // group(.field)
+            // group(.field) or group .field
             Some(Token::Group) => {
                 self.advance();
-                let args = if matches!(self.peek(), Some(Token::LParen)) {
-                    self.advance();
-                    let args = self.parse_arg_list()?;
-                    self.expect(&Token::RParen)?;
-                    args
-                } else { vec![] };
+                let args = self.parse_call_args()?;
                 Ok(Stage::Call(Call { name: "group".into(), args }))
             }
 
             // set(.field, value)
             Some(Token::Set) => {
                 self.advance();
-                self.expect(&Token::LParen)?;
-                let args = self.parse_arg_list()?;
-                self.expect(&Token::RParen)?;
+                let args = self.parse_call_args()?;
                 Ok(Stage::Call(Call { name: "set".into(), args }))
             }
 
-            // assert("value")
+            // assert("value") or assert value
             Some(Token::Assert) => {
                 self.advance();
-                self.expect(&Token::LParen)?;
-                let args = self.parse_arg_list()?;
-                self.expect(&Token::RParen)?;
+                let args = self.parse_call_args()?;
                 Ok(Stage::Call(Call { name: "assert".into(), args }))
             }
 
@@ -178,22 +213,25 @@ impl Parser {
                 Ok(Stage::Map(map_expr))
             }
 
-            // Bare keywords that transform the stream
-            Some(Token::Json)   => { self.advance(); Ok(Stage::Keyword("json".into())) }
-            Some(Token::Yaml)   => { self.advance(); Ok(Stage::Keyword("yaml".into())) }
-            Some(Token::Csv)    => { self.advance(); Ok(Stage::Keyword("csv".into())) }
-            Some(Token::Lines)  => { self.advance(); Ok(Stage::Keyword("lines".into())) }
-            Some(Token::Count)  => { self.advance(); Ok(Stage::Keyword("count".into())) }
-            Some(Token::Trim)   => { self.advance(); Ok(Stage::Keyword("trim".into())) }
-            Some(Token::Upper)  => { self.advance(); Ok(Stage::Keyword("upper".into())) }
-            Some(Token::Lower)  => { self.advance(); Ok(Stage::Keyword("lower".into())) }
-            Some(Token::Unique) => { self.advance(); Ok(Stage::Keyword("unique".into())) }
-            Some(Token::Sha256) => { self.advance(); Ok(Stage::Keyword("sha256".into())) }
-            Some(Token::Sha512) => { self.advance(); Ok(Stage::Keyword("sha512".into())) }
-            Some(Token::Md5)    => { self.advance(); Ok(Stage::Keyword("md5".into())) }
-            Some(Token::WriteKw) => { self.advance(); Ok(Stage::Keyword("write".into())) }
+            // Bare keywords that transform the stream OR have command arguments:
+            // e.g. `lines` (keyword) vs `lines app.log` (call with arg)
+            Some(tok) if self.is_keyword_token(&tok) => {
+                let kw = self.advance_token().unwrap();
+                let kw_name = self.token_to_keyword_name(&kw);
 
-            // Named function call: name(...) or ns.name(...)
+                // Check if followed by arguments (before |, >, >>, ;, or EOF)
+                if self.has_command_args_ahead() {
+                    let args = self.parse_command_args_until_delimiter()?;
+                    Ok(Stage::Call(Call { name: kw_name, args }))
+                } else {
+                    Ok(Stage::Keyword(kw_name))
+                }
+            }
+
+            // Named function call or command-style call:
+            // e.g. `glob("**/*.log")` OR `glob **/*.log`
+            // e.g. `grep("ERROR")` OR `grep ERROR`
+            // e.g. `search src TODO`
             Some(Token::Ident(_)) => {
                 let name = self.build_call_name()?;
                 let args = if matches!(self.peek(), Some(Token::LParen)) {
@@ -201,6 +239,8 @@ impl Parser {
                     let args = self.parse_arg_list()?;
                     self.expect(&Token::RParen)?;
                     args
+                } else if self.has_command_args_ahead() {
+                    self.parse_command_args_until_delimiter()?
                 } else {
                     vec![]
                 };
@@ -213,13 +253,218 @@ impl Parser {
         }
     }
 
+    fn is_keyword_token(&self, tok: &Token) -> bool {
+        matches!(
+            tok,
+            Token::Json
+                | Token::Yaml
+                | Token::Csv
+                | Token::Lines
+                | Token::Count
+                | Token::Trim
+                | Token::Upper
+                | Token::Lower
+                | Token::Unique
+                | Token::Sha256
+                | Token::Sha512
+                | Token::Md5
+                | Token::WriteKw
+        )
+    }
+
+    fn token_to_keyword_name(&self, tok: &Token) -> String {
+        match tok {
+            Token::Json => "json",
+            Token::Yaml => "yaml",
+            Token::Csv => "csv",
+            Token::Lines => "lines",
+            Token::Count => "count",
+            Token::Trim => "trim",
+            Token::Upper => "upper",
+            Token::Lower => "lower",
+            Token::Unique => "unique",
+            Token::Sha256 => "sha256",
+            Token::Sha512 => "sha512",
+            Token::Md5 => "md5",
+            Token::WriteKw => "write",
+            _ => "unknown",
+        }.to_string()
+    }
+
+    fn has_command_args_ahead(&self) -> bool {
+        match self.peek() {
+            Some(tok) => !matches!(
+                tok,
+                Token::Pipe
+                    | Token::Write
+                    | Token::Append
+                    | Token::Semi
+                    | Token::RParen
+                    | Token::RBrace
+                    | Token::RBracket
+            ),
+            None => false,
+        }
+    }
+
+    /// Parse arguments either from `(a, b)` or space-separated `a b`
+    fn parse_call_args(&mut self) -> AilangResult<Vec<Expr>> {
+        if matches!(self.peek(), Some(Token::LParen)) {
+            self.advance();
+            let args = self.parse_arg_list()?;
+            self.expect(&Token::RParen)?;
+            Ok(args)
+        } else if self.has_command_args_ahead() {
+            self.parse_command_args_until_delimiter()
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    /// Parse space-separated command arguments until a delimiter (`|`, `>`, `>>`, `;`, EOF)
+    fn parse_command_args_until_delimiter(&mut self) -> AilangResult<Vec<Expr>> {
+        let mut args = Vec::new();
+        while self.has_command_args_ahead() {
+            args.push(self.parse_command_arg()?);
+        }
+        Ok(args)
+    }
+
+    /// Parse a single command-style argument (supports unquoted globs/paths/strings)
+    fn parse_command_arg(&mut self) -> AilangResult<Expr> {
+        match self.peek().cloned() {
+            Some(Token::Str(s)) => {
+                self.advance();
+                Ok(Expr::Str(s))
+            }
+            Some(Token::Int(i)) => {
+                let (_, span) = self.advance().unwrap();
+                // Check if this integer is part of a contiguous path like `10.txt`
+                if let Some(next_span) = self.peek_span() {
+                    if next_span.start == span.end && !self.is_delimiter(self.peek()) {
+                        let mut end = next_span.end;
+                        self.advance();
+                        while let Some(ns) = self.peek_span() {
+                            if ns.start == end && !self.is_delimiter(self.peek()) {
+                                end = ns.end;
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                        return Ok(Expr::Str(self.input[span.start..end].to_string()));
+                    }
+                }
+                Ok(Expr::Int(i))
+            }
+            Some(Token::Float(f)) => {
+                self.advance();
+                Ok(Expr::Float(f))
+            }
+            Some(Token::True) => {
+                self.advance();
+                Ok(Expr::Bool(true))
+            }
+            Some(Token::False) => {
+                self.advance();
+                Ok(Expr::Bool(false))
+            }
+            Some(Token::Null) => {
+                self.advance();
+                Ok(Expr::Null)
+            }
+            Some(Token::Var(v)) => {
+                self.advance();
+                Ok(Expr::Var(v))
+            }
+            Some(Token::Dot) => {
+                // Could be field access `.field` or relative path `./file`
+                let (_first_tok, first_span) = self.advance().unwrap();
+                if let Some(next_span) = self.peek_span() {
+                    if next_span.start == first_span.end {
+                        // Contiguous! If it's a Slash, it's a path `./...`
+                        if matches!(self.peek(), Some(Token::Slash)) {
+                            let mut end = next_span.end;
+                            self.advance();
+                            while let Some(ns) = self.peek_span() {
+                                if ns.start == end && !self.is_delimiter(self.peek()) {
+                                    end = ns.end;
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                            return Ok(Expr::Str(self.input[first_span.start..end].to_string()));
+                        }
+                        // Field access: `.field`
+                        if let Some(Token::Ident(field)) = self.advance_token() {
+                            return Ok(Expr::Field(vec![field]));
+                        }
+                    }
+                }
+                Ok(Expr::Str(".".to_string()))
+            }
+            Some(_) => {
+                // Any unquoted word, path, or glob pattern (e.g. `**/*.log`, `src`, `ERROR`)
+                let raw = self.parse_contiguous_raw()?;
+                Ok(Expr::Str(raw))
+            }
+            None => Err(AilangError::ParseError {
+                msg: "Expected command argument, got EOF".into(),
+            }),
+        }
+    }
+
+    /// Read contiguous tokens (with zero whitespace in between) as a raw string slice
+    fn parse_contiguous_raw(&mut self) -> AilangResult<String> {
+        let (first_tok, first_span) = self.advance().ok_or_else(|| AilangError::ParseError {
+            msg: "Expected token, got EOF".into(),
+        })?;
+
+        // If it's a quoted string, return inner directly
+        if let Token::Str(s) = first_tok {
+            return Ok(s);
+        }
+
+        let start = first_span.start;
+        let mut end = first_span.end;
+
+        // Keep consuming tokens as long as they are directly adjacent in the input (no whitespace)
+        // and not a stage delimiter
+        while let Some(next_span) = self.peek_span() {
+            if next_span.start == end && !self.is_delimiter(self.peek()) {
+                end = next_span.end;
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        Ok(self.input[start..end].to_string())
+    }
+
+    fn is_delimiter(&self, tok_opt: Option<&Token>) -> bool {
+        match tok_opt {
+            Some(tok) => matches!(
+                tok,
+                Token::Pipe
+                    | Token::Write
+                    | Token::Append
+                    | Token::Semi
+                    | Token::RParen
+                    | Token::RBrace
+                    | Token::RBracket
+            ),
+            None => true,
+        }
+    }
+
     /// Build a potentially namespaced call name: `net.get`, `fs.read`, `base64.enc`
     fn build_call_name(&mut self) -> AilangResult<String> {
         let first = self.expect_ident()?;
         if matches!(self.peek(), Some(Token::Dot)) {
-            // Check if next-next is an ident (namespace.method)
             if self.pos + 1 < self.tokens.len() {
-                if let Token::Ident(_) = &self.tokens[self.pos + 1] {
+                if let Token::Ident(_) = &self.tokens[self.pos + 1].0 {
                     self.advance(); // consume dot
                     let method = self.expect_ident()?;
                     return Ok(format!("{}.{}", first, method));
@@ -240,28 +485,6 @@ impl Parser {
             args.push(self.parse_expr()?);
         }
         Ok(args)
-    }
-
-    fn parse_string_arg(&mut self) -> AilangResult<String> {
-        match self.peek().cloned() {
-            Some(Token::Str(s)) => {
-                self.advance();
-                Ok(s)
-            }
-            Some(Token::Ident(_)) => {
-                let mut path = self.expect_ident()?;
-                while matches!(self.peek(), Some(Token::Dot)) {
-                    self.advance();
-                    let ext = self.expect_ident()?;
-                    path.push('.');
-                    path.push_str(&ext);
-                }
-                Ok(path)
-            }
-            other => Err(AilangError::ParseError {
-                msg: format!("Expected string or path, got {:?}", other),
-            }),
-        }
     }
 
     /// Parse a map expression: {key: expr, key: expr, ...}
@@ -310,12 +533,10 @@ impl Parser {
 
     fn parse_cmp_expr(&mut self) -> AilangResult<Expr> {
         let lhs = self.parse_primary()?;
-        // Note: Token::Write is `>` in the lexer — dual use as sink AND comparator.
-        // In expression context (inside parens/args), `>` means greater-than.
         let op = match self.peek() {
             Some(Token::Eq)    => BinOp::Eq,
             Some(Token::Ne)    => BinOp::Ne,
-            Some(Token::Write) => BinOp::Gt,  // `>` = greater-than in expr context
+            Some(Token::Write) => BinOp::Gt,
             Some(Token::Ge)    => BinOp::Ge,
             Some(Token::Lt)    => BinOp::Lt,
             Some(Token::Le)    => BinOp::Le,
@@ -346,15 +567,13 @@ impl Parser {
                 self.expect(&Token::RParen)?;
                 Ok(expr)
             }
-            // Field path: .field or .field.method(args)
             Some(Token::Dot) => {
                 let mut parts = Vec::new();
                 while matches!(self.peek(), Some(Token::Dot)) {
-                    self.advance(); // consume dot
+                    self.advance();
                     let field = self.expect_ident()?;
                     parts.push(field);
                 }
-                // Check if it's a method call: .path.contains("x")
                 if matches!(self.peek(), Some(Token::Dot)) {
                     self.advance();
                     let method = self.expect_ident()?;
@@ -366,15 +585,8 @@ impl Parser {
                     Ok(Expr::Field(parts))
                 }
             }
-            // Identifiers / unquoted paths like README or README.md
             Some(Token::Ident(_)) => {
-                let mut s = self.expect_ident()?;
-                while matches!(self.peek(), Some(Token::Dot)) {
-                    self.advance();
-                    let ext = self.expect_ident()?;
-                    s.push('.');
-                    s.push_str(&ext);
-                }
+                let s = self.parse_contiguous_raw()?;
                 Ok(Expr::Str(s))
             }
             other => Err(AilangError::ParseError {
@@ -387,8 +599,7 @@ impl Parser {
 /// Parse an ailang expression string into a Pipeline AST.
 pub fn parse(input: &str) -> AilangResult<Pipeline> {
     let token_pairs = tokenize(input).map_err(|msg| AilangError::LexError { pos: 0, msg })?;
-    let tokens: Vec<Token> = token_pairs.into_iter().map(|(t, _)| t).collect();
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(input, token_pairs);
     parser.parse_pipeline()
 }
 
@@ -397,37 +608,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_simple_call() {
-        let ast = parse(r#"read("config.yaml")"#).unwrap();
-        assert_eq!(ast.stages.len(), 1);
-    }
-
-    #[test]
-    fn test_parse_unquoted_path() {
-        let ast = parse("read(README.md) | lines | count").unwrap();
-        assert_eq!(ast.stages.len(), 3);
-    }
-
-    #[test]
-    fn test_parse_pipeline_with_sink() {
-        let ast = parse(r#"glob("*.log") | grep("ERROR") | json > "out.json""#).unwrap();
-        assert_eq!(ast.stages.len(), 3);
-        assert!(matches!(ast.sink, Some(Sink::Write(_))));
-    }
-
-    #[test]
-    fn test_parse_filter() {
-        let ast = parse("filter(.age > 18)").unwrap();
-        assert_eq!(ast.stages.len(), 1);
-    }
-
-    #[test]
-    fn test_parse_namespaced_call() {
-        let ast = parse(r#"net.get("https://example.com")"#).unwrap();
+    fn test_parse_command_style_glob_grep() {
+        let ast = parse("glob **/*.log | grep ERROR > out.json").unwrap();
+        assert_eq!(ast.stages.len(), 2);
         if let Stage::Call(c) = &ast.stages[0] {
-            assert_eq!(c.name, "net.get");
+            assert_eq!(c.name, "glob");
+            assert_eq!(c.args, vec![Expr::Str("**/*.log".into())]);
         } else {
-            panic!("Expected Call stage");
+            panic!("Expected Call stage for glob");
+        }
+        if let Stage::Call(c) = &ast.stages[1] {
+            assert_eq!(c.name, "grep");
+            assert_eq!(c.args, vec![Expr::Str("ERROR".into())]);
+        } else {
+            panic!("Expected Call stage for grep");
+        }
+        assert!(matches!(ast.sink, Some(Sink::Write(s)) if s == "out.json"));
+    }
+
+    #[test]
+    fn test_parse_stream_input_operator() {
+        let ast = parse("< Cargo.toml | lines | count").unwrap();
+        assert_eq!(ast.stages.len(), 3);
+        if let Stage::Call(c) = &ast.stages[0] {
+            assert_eq!(c.name, "read");
+            assert_eq!(c.args, vec![Expr::Str("Cargo.toml".into())]);
+        } else {
+            panic!("Expected Call stage for <");
+        }
+    }
+
+    #[test]
+    fn test_parse_compound_verb_search() {
+        let ast = parse("search src TODO").unwrap();
+        assert_eq!(ast.stages.len(), 1);
+        if let Stage::Call(c) = &ast.stages[0] {
+            assert_eq!(c.name, "search");
+            assert_eq!(c.args.len(), 2);
         }
     }
 }
