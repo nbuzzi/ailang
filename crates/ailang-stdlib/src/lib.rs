@@ -17,17 +17,18 @@ pub fn dispatch(
 ) -> AilangResult<Vec<Value>> {
     match name {
         // ── fs ─────────────────────────────────────────────────────────────
-        "read"    => fs::read(args, input),
-        "write"   => fs::write(args, input),
-        "glob"    => fs::glob(args, input),
-        "walk"    => fs::walk(args, input),
-        "cp"      => fs::cp(args, input),
-        "mv"      => fs::mv(args, input),
-        "rm"      => fs::rm(args, input),
-        "exists"  => fs::exists(args, input),
-        "stat"    => fs::stat(args, input),
-        "diff"    => fs::diff(args, input),
-        "patch"   => fs::patch_file(args, input),
+        "read"          => fs::read(args, input),
+        "write"         => fs::write(args, input),
+        "glob"          => fs::glob(args, input),
+        "walk"          => fs::walk(args, input),
+        "cp"            => fs::cp(args, input),
+        "mv"            => fs::mv(args, input),
+        "rm"            => fs::rm(args, input),
+        "exists"        => fs::exists(args, input),
+        "stat"          => fs::stat(args, input),
+        "diff"          => fs::diff(args, input),
+        "patch"         => fs::patch_file(args, input),
+        "replace_block" => fs::replace_block(args, input),
 
         // ── text ────────────────────────────────────────────────────────────
         "grep"    => text::grep(args, input),

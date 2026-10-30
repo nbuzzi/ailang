@@ -1,13 +1,7 @@
-use ailang_core::{error::{AilangError, AilangResult}, Value};
-use std::collections::HashMap;
+use ailang_core::{error::{AilangError, AilangResult}, Map, Value};
 
 /// filter(.field > value) — filter a list by a predicate expression
-/// The predicate is already evaluated by the eval engine; this handles list filtering.
 pub fn filter(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
-    // In the evaluator, filter's predicate is compiled to a closure.
-    // Here we handle the case where a pre-evaluated bool list is passed.
-    // The actual filtering with expressions is done in ailang-eval.
-    // This stub handles direct bool filtering for testing.
     let _ = (args, input);
     Err(AilangError::RuntimeError {
         stage: "filter".into(),
@@ -48,18 +42,17 @@ pub fn group(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
         None => return Ok(vec![]),
     };
 
-    let mut groups: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut groups: Map = Map::new();
     for item in items {
         let key = item.get_field(&field).to_string();
-        groups.entry(key).or_default().push(item);
+        if let Some(Value::List(list)) = groups.get_mut(&key) {
+            list.push(item);
+        } else {
+            groups.insert(key, Value::List(vec![item]));
+        }
     }
 
-    let result: HashMap<String, Value> = groups
-        .into_iter()
-        .map(|(k, v)| (k, Value::List(v)))
-        .collect();
-
-    Ok(vec![Value::Object(result)])
+    Ok(vec![Value::Object(groups)])
 }
 
 /// set(.field, value) — set a field on an object (immutable, returns new object)

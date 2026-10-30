@@ -8,11 +8,11 @@ Drop this compact cheatsheet into your LLM agent's system prompt to enable nativ
 
 ```
 AISL: pipe-based scripting runtime. Invoke: ailang "expr"
-fs: read(p) write(p) glob(pat) walk(d) cp(dst) mv(dst) rm exists(p) stat diff(a,b)
+fs: read(p) write(p) glob(pat) walk(d) cp(dst) mv(dst) rm exists(p) stat diff(a,b) patch(p,diff) replace_block(p,target,repl)
 text: grep(re) sed(re,r) lines count trim upper lower slice(n,m)
 data: json yaml csv map({k:.f}) filter(.f>v) sort(.f) group(.f) set(.f,v) unique assert(v)
 net: net.get(url) net.post(url,b) net.download(url,p)
-sys: exec(cmd,[args]) env(k) os arch pwd cd(p)
+sys: exec(cmd,[args]) env(k) pwd cd(p)
 crypto: sha256 sha512 md5 base64.enc base64.dec
 ops: | pipe  > write  >> append  ? filter  @ iterate  .field
 ex: glob("*.log")|grep("ERR")|map({f:.path,l:.line})>"out.json"
@@ -23,9 +23,11 @@ ex: glob("*.log")|grep("ERR")|map({f:.path,l:.line})>"out.json"
 ## 🛠️ Function Reference
 
 ### File System (`fs`)
-* `read(path)`: Reads entire file as string.
+* `read(path)`: Reads entire file as string (auto-detects UTF-8, UTF-8 BOM, UTF-16).
 * `write(path)` or `> path`: Writes stream/string to destination file (overwrite).
 * `>> path`: Appends to destination file.
+* `replace_block(file, target, replacement)`: Surgical multi-line code replacement with fuzzy whitespace tolerance.
+* `patch(file, diff)`: Applies unified diff to target file.
 * `glob(pattern)`: Returns files matching pattern (supports `**/*`).
 * `walk(dir)`: Recursively traverses directory.
 * `cp(dest)`: Copies file or dir to destination.
@@ -63,7 +65,7 @@ ex: glob("*.log")|grep("ERR")|map({f:.path,l:.line})>"out.json"
 * `net.download(url, path)`: Streams remote file directly to disk.
 
 ### System (`sys`)
-* `exec(command, [args])`: Spawns command and returns stdout.
+* `exec(command, [args])`: Spawns command and returns stdout. Piped input is passed to process stdin (`read('file') | exec('sort')`).
 * `env(var_name)`: Returns value of environment variable.
 * `pwd()`: Returns current working directory.
 * `cd(path)`: Changes working directory.
@@ -74,3 +76,23 @@ ex: glob("*.log")|grep("ERR")|map({f:.path,l:.line})>"out.json"
 * `md5`: Computes MD5 hash.
 * `base64.enc`: Encodes input string as Base64.
 * `base64.dec`: Decodes Base64 string.
+
+---
+
+## 🔌 Model Context Protocol (MCP) Mode
+
+Start `ailang` as a standard MCP server on stdio:
+```bash
+ailang serve --mcp
+```
+Configure in Claude Desktop (`claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "ailang": {
+      "command": "ailang",
+      "args": ["serve", "--mcp"]
+    }
+  }
+}
+```

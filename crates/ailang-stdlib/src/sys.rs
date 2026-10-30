@@ -1,8 +1,11 @@
 use ailang_core::{error::{AilangError, AilangResult}, Value};
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
-/// exec("cmd", ["arg1", "arg2"]) → Value::Str with stdout
-pub fn exec(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
+/// exec("cmd", ["arg1", "arg2"]) or piped: input | exec("cmd")
+/// Spawns the command and returns stdout as Value::Str.
+/// If input is provided, pipes it to the process stdin.
+pub fn exec(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
     let cmd = get_str_arg(args, 0, "exec")?;
 
     let mut command = if cfg!(target_os = "windows") {
@@ -22,14 +25,32 @@ pub fn exec(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
         }
     }
 
-    let output = command.output()?;
+    let output = if let Some(ref in_val) = input {
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        let mut child = command.spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            let bytes = in_val.to_string();
+            let _ = stdin.write_all(bytes.as_bytes());
+        }
+        child.wait_with_output()?
+    } else {
+        command.output()?
+    };
 
     if output.status.success() {
         Ok(vec![Value::Str(String::from_utf8_lossy(&output.stdout).into_owned())])
     } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let msg = if stderr.is_empty() {
+            format!("Process exited with status {}", output.status)
+        } else {
+            stderr
+        };
         Err(AilangError::RuntimeError {
             stage: "exec".into(),
-            msg: String::from_utf8_lossy(&output.stderr).into_owned(),
+            msg,
         })
     }
 }
@@ -70,9 +91,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_exec_echo() {
+        let cmd = if cfg!(target_os = "windows") { "echo hello" } else { "echo 'hello'" };
+        let result = exec(&[Value::Str(cmd.into())], None).unwrap();
+        assert!(result[0].to_string().contains("hello"));
+    }
+
+    #[test]
+    fn test_exec_piped_stdin() {
+        let cmd = if cfg!(target_os = "windows") { "findstr world" } else { "grep world" };
+        let input = Some(Value::Str("hello\nworld\nfoo".into()));
+        let result = exec(&[Value::Str(cmd.into())], input).unwrap();
+        assert!(result[0].to_string().contains("world"));
+    }
+
+    #[test]
     fn test_env_path() {
         let result = env(&[Value::Str("PATH".into())], None).unwrap();
-        // PATH should exist on any OS
         assert!(matches!(&result[0], Value::Str(s) if !s.is_empty()));
     }
 

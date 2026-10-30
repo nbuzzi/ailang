@@ -1,7 +1,7 @@
 use ailang_core::{
     ast::*,
     error::{AilangError, AilangResult},
-    Value,
+    Map, Value,
 };
 use ailang_stdlib as stdlib;
 use std::collections::HashMap;
@@ -91,7 +91,7 @@ fn eval_stage(
             let items = input_to_list(input);
             let mut results = Vec::new();
             for item in items {
-                let mut obj = HashMap::new();
+                let mut obj = Map::new();
                 for (key, expr) in &map_expr.fields {
                     obj.insert(key.clone(), eval_expr(expr, &item, ctx)?);
                 }
@@ -209,7 +209,7 @@ fn eval_keyword(
                 let record = result.map_err(|e| AilangError::RuntimeError {
                     stage: "csv".into(), msg: e.to_string(),
                 })?;
-                let mut obj = HashMap::new();
+                let mut obj = Map::new();
                 for (i, field) in record.iter().enumerate() {
                     if let Some(header) = headers.get(i) {
                         // Try to parse as number
@@ -296,6 +296,13 @@ pub fn eval_expr(expr: &Expr, current: &Value, ctx: &Context) -> AilangResult<Va
         Expr::Int(i)     => Ok(Value::Int(*i)),
         Expr::Float(f)   => Ok(Value::Float(*f)),
         Expr::Str(s)     => Ok(Value::Str(s.clone())),
+
+        Expr::List(items) => {
+            let evaluated = items.iter()
+                .map(|e| eval_expr(e, current, ctx))
+                .collect::<AilangResult<Vec<_>>>()?;
+            Ok(Value::List(evaluated))
+        }
 
         Expr::Var(name) => {
             if let Some(vals) = ctx.get(name) {

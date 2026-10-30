@@ -1,6 +1,12 @@
 /// AST nodes for the ailang pipeline language.
 /// Every ailang expression compiles down to a Pipeline of Stages.
 
+/// A program is one or more pipelines separated by `;`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Program {
+    pub pipelines: Vec<Pipeline>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pipeline {
     pub stages: Vec<Stage>,
@@ -12,11 +18,11 @@ pub struct Pipeline {
 pub enum Stage {
     /// A function call: name(arg1, arg2, ...)
     Call(Call),
-    /// An inline filter shorthand: ? expr
+    /// Filter by predicate: filter(expr) or `? expr`
     Filter(Expr),
     /// A map/transform: map({k: expr, ...})
     Map(MapExpr),
-    /// Field access shorthand: .field
+    /// Field access shorthand: .field or .a.b (dotted path)
     FieldAccess(String),
     /// Bare keyword: json, yaml, csv, lines, count, trim, sha256, md5, ...
     Keyword(String),
@@ -53,9 +59,11 @@ pub enum Expr {
     Int(i64),
     Float(f64),
     Str(String),
+    /// List literal: ["a", "b"]
+    List(Vec<Expr>),
     /// Variable reference in expressions: $var
     Var(String),
-    /// Field path: .field or .nested.field
+    /// Field path: .field or .nested.field (empty path = current item)
     Field(Vec<String>),
     /// Method call on field: .field.contains("x")
     FieldMethod(Vec<String>, String, Vec<Expr>),

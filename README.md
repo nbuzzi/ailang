@@ -1,4 +1,4 @@
-# Ailang 🤖⚡
+# ailang 🤖⚡
 
 <div align="center">
 
@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange?logo=rust)](https://www.rust-lang.org/)
-[![Status: WIP](https://img.shields.io/badge/Status-Work%20in%20Progress-blue)]()
+[![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen)]()
 
 *Replace Python, PowerShell, and Bash in AI agent workflows — using up to 80% fewer tokens.*
 
@@ -61,21 +61,25 @@ glob("**/*.log") | grep("ERROR") | map({file:.path, err:.line}) > "out.json"
 
 It is not designed to be readable by humans (though it is). It is designed to be **generated efficiently** by large language models and **executed instantly** by a native Rust runtime.
 
-```
-ailang "expr"              # inline — for AI agents
+```bash
+ailang "expr"              # inline execution (for AI agents & CLI)
 ailang run script.al       # run a script file
+ailang serve --mcp         # run native Model Context Protocol (MCP) server
+ailang bench "expr"        # benchmark token savings vs Python / PowerShell
 ```
 
-### Key Properties
+### Key Capabilities
 
-| Property | Description |
+| Capability | Description |
 |:---|:---|
-| **Token-first syntax** | Every keyword and operator is chosen to occupy exactly 1 token in modern LLM tokenizers (cl100k, llama3, gemma) |
-| **No imports** | All capabilities are built in: file I/O, JSON/YAML/CSV, regex, HTTP, hashing |
-| **Cross-platform** | Identical behavior on Windows, Linux, and macOS. No `\` vs `/`, no quoting nightmares |
-| **AI-friendly output** | Returns minified JSON or raw text — not human-readable tables that waste output tokens |
-| **Structured errors** | `{"error": "message", "code": N}` — agents can parse failures without reading stacktraces |
-| **Fast startup** | ~0.5ms cold start — no interpreter overhead, no VM, no GC pauses |
+| **Token-first syntax** | Keywords and operators occupy exactly 1 token in modern LLM tokenizers (cl100k, llama3, gemma) |
+| **Surgical Code Editing** | `replace_block` and `patch` with fuzzy matching — edit code without rewriting entire files |
+| **Native MCP Server** | Built-in JSON-RPC Model Context Protocol server (`ailang serve --mcp`) for Claude, Cursor, Antigravity |
+| **Agent Safety & Sandbox** | `--dry-run`, `--read-only`, and `--allow-dir` flags prevent accidental damage |
+| **No imports** | File I/O, JSON/YAML/CSV, regex, HTTP, hashing, and shell execution are all built-in |
+| **Piped Process Exec** | `exec(cmd)` supports stdin piping: `read('file') \| exec('sort')` |
+| **Deterministic Output** | Insertion-ordered JSON maps ensure reproducible, structured agent responses |
+| **Fast startup** | Sub-millisecond cold start (~0.5ms) — no interpreter overhead or GC pauses |
 
 ---
 
@@ -99,13 +103,13 @@ ailang uses a **pipeline model**: data flows left to right through operations se
 | `@` | Iterate over collection | 1 |
 | `{k: v}` | Construct an object | ~3 |
 
-### Standard Library at a Glance
+### Standard Library
 
 ```
-fs      read(p)  write(p)  glob(pat)  walk(d)  cp  mv  rm  exists  stat  diff  patch
+fs      read(p)  write(p)  glob(pat)  walk(d)  cp  mv  rm  exists  stat  diff  patch  replace_block
 text    grep(re)  sed(re,r)  lines  count  trim  upper  lower  slice(n,m)
-data    json  yaml  csv  map({})  filter()  sort()  group()  set()  unique
-net     get(url)  post(url,body)  download(url,path)
+data    json  yaml  csv  map({})  filter()  sort()  group()  set()  unique  assert()
+net     net.get(url)  net.post(url,body)  net.download(url,path)
 sys     exec(cmd,[args])  env(k)  os  arch  pwd  cd
 crypto  md5  sha256  sha512  base64.enc  base64.dec
 ```
@@ -137,7 +141,20 @@ glob("**/*.log") | grep("ERROR") | map({file:.path, err:.line}) > "out.json"
 
 ---
 
-### Example 2 — Read YAML config, update a field, save
+### Example 2 — Surgical Code Editing (No Full Rewrites!)
+
+Instead of regenerating a 500-line file (costing 2,000 tokens), an agent replaces only the target block:
+
+```
+# ailang: 12 tokens  ✅  -95%
+replace_block("src/main.rs", "fn old() { 1 }", "fn old() { 2 }")
+```
+
+ailang's `replace_block` features **fuzzy whitespace tolerance**, so slight indentation mismatches by LLMs succeed seamlessly.
+
+---
+
+### Example 3 — Read YAML config, update a field, save
 
 ```python
 # Python: ~45 tokens
@@ -157,35 +174,16 @@ read("config.yaml") | yaml | set(.version, "2.0") > "config.yaml"
 
 ---
 
-### Example 3 — Download file and verify SHA-256 hash
+### Example 4 — Piped Process Execution
 
 ```bash
-# Bash + Python: ~60 tokens
-curl -s -o file.zip https://example.com/file.zip
-python3 -c "import hashlib; print(hashlib.sha256(open('file.zip','rb').read()).hexdigest())"
+# Bash: ~25 tokens
+cat list.txt | grep -v "^#" | sort | uniq > clean.txt
 ```
 
 ```
-# ailang: 14 tokens  ✅  -77%
-net.get("https://example.com/file.zip") > "file.zip" | sha256 | assert("abc123...")
-```
-
----
-
-### Example 4 — Replace text across many source files
-
-```powershell
-# PowerShell: ~55 tokens
-Get-ChildItem -Recurse -Filter "*.rs" |
-  ForEach-Object {
-    (Get-Content $_.FullName) -replace "TODO", "DONE" |
-    Set-Content $_.FullName
-  }
-```
-
-```
-# ailang: 11 tokens  ✅  -80%
-glob("src/**/*.rs") | sed("TODO", "DONE") | write
+# ailang: 12 tokens  ✅
+read("list.txt") | lines | filter(!.starts_with("#")) | unique | exec("sort") > "clean.txt"
 ```
 
 ---
@@ -209,38 +207,69 @@ read("data.csv") | csv | filter(.age > 18) | json > "adults.json"
 
 ---
 
-### Example 6 — Copy directory tree, excluding build artifacts
+## 📊 Built-in Token Benchmarking
+
+ailang includes a benchmark engine that calculates token savings and microsecond latencies directly from your terminal:
 
 ```bash
-# Bash: ~30 tokens
-find src/ -not -path "*/target/*" -not -name "*.lock" | \
-  while read f; do
-    mkdir -p "backup/$(dirname "$f")"
-    cp "$f" "backup/$f"
-  done
+ailang bench "glob('**/*.log') | grep('ERROR') | map({file:.path,err:.line}) > 'out.json'"
 ```
 
+Output:
 ```
-# ailang: 13 tokens  ✅  -57%
-walk("src") | filter(!.path.contains("target")) | cp("backup")
+=== ailang Token Benchmark ===
+Expression: glob('**/*.log') | grep('ERROR') | map({file:.path,err:.line}) > 'out.json'
+
+Estimated Tokens:
+  * ailang:        21 tokens
+  * Python:       113 tokens  (~81% savings)
+  * PowerShell:    92 tokens  (~77% savings)
+
+Performance:
+  * Parse latency:   84.9µs
+  * Exec latency:    103.7ms
+==============================
 ```
 
 ---
 
-## Token Savings Summary
+## 🔌 Model Context Protocol (MCP) Integration
 
-| Task | Python | PowerShell | Bash | **ailang** | **Saved** |
-|:---|:---:|:---:|:---:|:---:|:---:|
-| Read a file | 12 | 8 | 6 | **3** | 50–75% |
-| Search logs + export JSON | 95 | 60 | 45 | **18** | **81%** |
-| Transform CSV → JSON | 50 | 70 | — | **10** | **80%** |
-| Mass text replacement | 55 | 35 | 25 | **11** | **56%** |
-| Download + verify hash | 60 | 45 | 30 | **14** | **53%** |
-| Copy directory tree | 30 | 20 | 10 | **5** | **50%** |
-| Update YAML config | 45 | — | — | **12** | **73%** |
-| **Average** | | | | | **~67%** |
+Connect ailang directly to Claude Desktop, Cursor, Copilot, or Antigravity via stdio JSON-RPC:
 
-> Savings compound: a complex agent workflow touching 10+ operations saves **thousands of tokens per session**.
+```bash
+ailang serve --mcp
+```
+
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "ailang": {
+      "command": "ailang",
+      "args": ["serve", "--mcp"]
+    }
+  }
+}
+```
+
+---
+
+## 🛡️ Agent Safety & Sandboxing
+
+Prevent unintended side-effects with native security guardrails:
+
+```bash
+# Preview what would be written or modified without touching disk:
+ailang "replace_block('src/main.rs', 'old', 'new')" --dry-run
+
+# Run in strict read-only mode (blocks write, replace_block, patch, and process exec):
+ailang "glob('**/*') | lines | count" --read-only
+
+# Restrict file modifications to a specific directory:
+ailang "read('src/lib.rs')" --allow-dir ./src
+```
 
 ---
 
@@ -255,59 +284,20 @@ ailang "glob('*.log') | grep('ERROR') | json > out.json"
     └────┬────┘
          │
     ┌────▼────┐
-    │  Parser │  winnow — pipeline + expression AST
+    │  Parser │  recursive descent — pipeline + expression AST
     └────┬────┘
          │
     ┌────▼──────────┐
-    │   Evaluator   │  lazy streaming pipeline engine
+    │   Evaluator   │  streaming pipeline engine (IndexMap deterministic order)
     └────┬──────────┘
          │
-    ┌────▼──────────────────────────────────────┐
-    │              Standard Library             │
-    │  fs · text · data · net · sys · crypto   │
-    └───────────────────────────────────────────┘
+    ┌────▼──────────────────────────────────────────────────┐
+    │                   Standard Library                    │
+    │  fs (replace_block, patch) · text · data · sys · net  │
+    └───────────────────────────────────────────────────────┘
          │
          ▼
-    minified JSON / raw text  →  AI agent reads response
-```
-
----
-
-## AI Integration
-
-### System Prompt Snippet (< 80 tokens)
-
-Drop this into any AI system prompt to teach the agent to use ailang:
-
-```
-AISL: pipe-based scripting runtime. Invoke: ailang "expr"
-fs: read(p) write(p) glob(pat) walk(d) cp mv rm exists stat diff patch
-text: grep(re) sed(re,r) lines count trim slice(n,m) upper lower
-data: json yaml csv map({k:.f}) filter(.f>v) sort(.f) group set(.f,v) unique
-net: get(url) post(url,b) download(url,p)
-sys: exec(cmd,[args]) env(k) os arch pwd
-crypto: md5 sha256 base64.enc base64.dec
-ops: | pipe  > write  >> append  ? filter  @ iterate  .field
-ex: glob("*.log")|grep("ERR")|map({f:.path,l:.line})>"out.json"
-```
-
-### Tool Definition (OpenAI / Claude format)
-
-```json
-{
-  "name": "ailang",
-  "description": "Execute an ailang pipeline expression. Replaces Python/PowerShell/Bash for file I/O, data transformation, HTTP, and system operations. Optimized for minimal token usage.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "expression": {
-        "type": "string",
-        "description": "ailang pipeline expression to execute. Example: glob('*.log') | grep('ERROR') | json"
-      }
-    },
-    "required": ["expression"]
-  }
-}
+    minified JSON / raw text  →  AI agent reads response (via CLI or MCP)
 ```
 
 ---
@@ -321,81 +311,48 @@ ailang/
 ├── LICENSE                     # MIT
 │
 ├── crates/
-│   ├── ailang-core/            # AST types, Value enum, error types
+│   ├── ailang-core/            # AST types, Value enum, SecurityPolicy, error types
 │   ├── ailang-lexer/           # Tokenizer (logos)
-│   ├── ailang-parser/          # Parser + AST builder (winnow)
-│   ├── ailang-eval/            # Pipeline evaluator + context
-│   ├── ailang-stdlib/          # Built-in functions (fs/text/data/net/sys/crypto)
-│   └── ailang-cli/             # Binary entry point (clap)
+│   ├── ailang-parser/          # Recursive descent parser + AST builder
+│   ├── ailang-eval/            # Pipeline evaluator + expression engine
+│   ├── ailang-stdlib/          # Built-in functions (fs, text, data, net, sys, crypto)
+│   ├── ailang-mcp/             # Model Context Protocol stdio server
+│   └── ailang-cli/             # Binary entry point (inline, run, serve, bench)
 │
 ├── docs/
 │   ├── language-spec.md        # Formal grammar (BNF)
-│   ├── stdlib-reference.md     # Full function reference
-│   ├── token-savings.md        # Benchmarks and methodology
-│   └── ai-integration.md       # Integration guides for Claude, GPT, Gemini
+│   └── ai-prompt-sheet.md      # <75 token cheatsheet for system prompts
 │
-├── examples/
-│   ├── file-operations.al
-│   ├── log-analysis.al
-│   ├── data-transform.al
-│   └── api-workflow.al
-│
-└── tests/
-    ├── integration/
-    └── stdlib/
+└── examples/
+    ├── 01_count_lines.al
+    ├── 02_grep_and_json.al
+    └── 03_hash_and_env.al
 ```
 
 ---
 
-## Roadmap
+## Quickstart
 
-| Milestone | Description | Status |
-|:---|:---|:---:|
-| **M0** | Repo setup, CI, workspace scaffold | 🔜 |
-| **M1** | Lexer + Parser + AST (core language) | 🔜 |
-| **M2** | stdlib: `fs` + `text` + `data` modules | 🔜 |
-| **M3** | Pipeline evaluator + streaming engine | 🔜 |
-| **M4** | stdlib: `net` + `sys` + `crypto` modules | 🔜 |
-| **M5** | CLI binary + pre-compiled releases | 🔜 |
-| **M6** | Docs, AI integration guides, benchmarks | 🔜 |
+```bash
+# Clone the repository
+git clone https://github.com/nbuzzi/ailang.git
+cd ailang
 
----
+# Run all workspace tests (30 passing tests)
+cargo test --workspace
 
-## Tech Stack
+# Build the CLI
+cargo build --release -p ailang-cli
 
-| Crate | Purpose |
-|:---|:---|
-| `logos` | Zero-copy lexer |
-| `winnow` | Parser combinators + AST |
-| `serde` + `serde_json` | JSON serialization |
-| `serde_yaml` | YAML support |
-| `csv` | Streaming CSV parsing |
-| `regex` | Pattern matching |
-| `walkdir` | Cross-platform file tree traversal |
-| `globset` | Glob pattern matching with `**` |
-| `reqwest` + `tokio` | Async HTTP client |
-| `clap` | CLI argument parsing |
-| `sha2` + `md5` | Cryptographic hashing |
-| `base64` | Encoding/decoding |
-
----
-
-## Contributing
-
-ailang is in early development. All contributions welcome.
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feat/my-feature`
-3. Run tests: `cargo test --workspace`
-4. Open a pull request
+# Test an expression
+./target/release/ailang "read('Cargo.toml') | lines | count"
+```
 
 ---
 
 ## License
 
 MIT — see [LICENSE](LICENSE)
-
----
 
 <div align="center">
 
