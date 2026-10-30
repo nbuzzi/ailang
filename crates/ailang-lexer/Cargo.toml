@@ -1,0 +1,10 @@
+[package]
+name = "ailang-lexer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ailang-core = { workspace = true }
+logos       = { workspace = true }
