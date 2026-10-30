@@ -1,6 +1,6 @@
 use ailang_core::error::ErrorOutput;
-use ailang_eval::{eval_pipeline, value_to_json, Context};
-use ailang_parser::parse;
+use ailang_eval::{eval_pipeline, eval_program, value_to_json, Context};
+use ailang_parser::{parse, parse_program};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process;
@@ -115,8 +115,8 @@ fn execute_expr(expr: &str, output_format: &str) {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create async runtime");
     let handle = rt.handle().clone();
 
-    // Parse
-    let pipeline = match parse(expr) {
+    // Parse program (supports single or multi-pipeline expressions separated by ;)
+    let program = match parse_program(expr) {
         Ok(p) => p,
         Err(e) => {
             let err = ErrorOutput::from(&e);
@@ -127,7 +127,7 @@ fn execute_expr(expr: &str, output_format: &str) {
 
     // Evaluate
     let mut ctx = Context::new();
-    match eval_pipeline(&pipeline, &mut ctx, &handle) {
+    match eval_program(&program, &mut ctx, &handle) {
         Ok(values) => {
             output_values(&values, output_format);
         }

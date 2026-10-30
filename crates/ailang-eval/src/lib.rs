@@ -26,6 +26,19 @@ impl Context {
     }
 }
 
+/// Execute an entire program (multiple pipelines separated by semicolons) sequentially.
+pub fn eval_program(
+    program: &ailang_core::Program,
+    ctx: &mut Context,
+    rt: &tokio::runtime::Handle,
+) -> AilangResult<Vec<Value>> {
+    let mut last_result = vec![];
+    for pipeline in &program.pipelines {
+        last_result = eval_pipeline(pipeline, ctx, rt)?;
+    }
+    Ok(last_result)
+}
+
 /// Execute a parsed pipeline, returning the final output values.
 pub fn eval_pipeline(
     pipeline: &Pipeline,
@@ -51,8 +64,20 @@ pub fn eval_pipeline(
             }
         };
         match sink {
-            Sink::Write(path) => std::fs::write(path, content)?,
+            Sink::Write(path) => {
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    if !parent.as_os_str().is_empty() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                }
+                std::fs::write(path, content)?;
+            }
             Sink::Append(path) => {
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    if !parent.as_os_str().is_empty() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                }
                 use std::io::Write;
                 let mut f = std::fs::OpenOptions::new()
                     .create(true).append(true).open(path)?;
@@ -115,6 +140,10 @@ fn eval_stage(
             ctx.get(name)
                 .cloned()
                 .ok_or_else(|| AilangError::UnknownVariable(name.clone()))
+        }
+
+        Stage::Literal(val) => {
+            Ok(vec![val.clone()])
         }
     }
 }

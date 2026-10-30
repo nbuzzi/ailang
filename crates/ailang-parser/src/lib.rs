@@ -68,6 +68,24 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse multiple pipelines separated by semicolons into a Program AST
+    pub fn parse_program(&mut self) -> AilangResult<Program> {
+        let mut pipelines = Vec::new();
+        while self.peek().is_some() {
+            while matches!(self.peek(), Some(Token::Semi)) {
+                self.advance();
+            }
+            if self.peek().is_none() {
+                break;
+            }
+            pipelines.push(self.parse_pipeline()?);
+            while matches!(self.peek(), Some(Token::Semi)) {
+                self.advance();
+            }
+        }
+        Ok(Program { pipelines })
+    }
+
     /// Parse a full pipeline expression (top-level entry point)
     pub fn parse_pipeline(&mut self) -> AilangResult<Pipeline> {
         let mut stages: Vec<Stage> = Vec::new();
@@ -245,6 +263,28 @@ impl<'a> Parser<'a> {
                     vec![]
                 };
                 Ok(Stage::Call(Call { name, args }))
+            }
+
+            // Literal value as stage: e.g. """fn main() {}""" > "main.rs" or "hello" | upper
+            Some(Token::Str(s)) => {
+                self.advance();
+                Ok(Stage::Literal(ailang_core::Value::Str(s)))
+            }
+            Some(Token::Int(i)) => {
+                self.advance();
+                Ok(Stage::Literal(ailang_core::Value::Int(i)))
+            }
+            Some(Token::Float(f)) => {
+                self.advance();
+                Ok(Stage::Literal(ailang_core::Value::Float(f)))
+            }
+            Some(Token::True) => {
+                self.advance();
+                Ok(Stage::Literal(ailang_core::Value::Bool(true)))
+            }
+            Some(Token::False) => {
+                self.advance();
+                Ok(Stage::Literal(ailang_core::Value::Bool(false)))
             }
 
             other => Err(AilangError::ParseError {
@@ -603,6 +643,13 @@ pub fn parse(input: &str) -> AilangResult<Pipeline> {
     parser.parse_pipeline()
 }
 
+/// Parse an ailang program (one or more pipelines separated by semicolons) into a Program AST.
+pub fn parse_program(input: &str) -> AilangResult<Program> {
+    let token_pairs = tokenize(input).map_err(|msg| AilangError::LexError { pos: 0, msg })?;
+    let mut parser = Parser::new(input, token_pairs);
+    parser.parse_program()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,5 +693,13 @@ mod tests {
             assert_eq!(c.name, "search");
             assert_eq!(c.args.len(), 2);
         }
+    }
+
+    #[test]
+    fn test_parse_literal_stage() {
+        let ast = parse(r#""""fn hello() {}""" > "main.rs""#).unwrap();
+        assert_eq!(ast.stages.len(), 1);
+        assert!(matches!(&ast.stages[0], Stage::Literal(ailang_core::Value::Str(s)) if s == "fn hello() {}"));
+        assert!(matches!(&ast.sink, Some(Sink::Write(s)) if s == "main.rs"));
     }
 }

@@ -30,6 +30,8 @@ pub enum Stage {
     Let(String, Box<Pipeline>),
     /// Variable reference: $x
     Var(String),
+    /// Literal value as a stage (e.g. """code""" > file.ts or "hello" | upper)
+    Literal(crate::Value),
 }
 
 #[derive(Debug, Clone, PartialEq)]

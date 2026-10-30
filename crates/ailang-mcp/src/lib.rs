@@ -1,6 +1,6 @@
 use ailang_core::error::ErrorOutput;
-use ailang_eval::{eval_pipeline, value_to_json, Context};
-use ailang_parser::parse;
+use ailang_eval::{eval_program, value_to_json, Context};
+use ailang_parser::parse_program;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::io::{self, BufRead, Write};
@@ -132,8 +132,8 @@ pub fn run_stdio_server() -> io::Result<()> {
                     .and_then(|e| e.as_str());
 
                 let result_text = match expr_opt {
-                    Some(expr) => match parse(expr) {
-                        Ok(pipeline) => match eval_pipeline(&pipeline, &mut ctx, &handle) {
+                    Some(expr) => match parse_program(expr) {
+                        Ok(program) => match eval_program(&program, &mut ctx, &handle) {
                             Ok(values) => {
                                 let json_vals: Vec<_> = values.iter().map(value_to_json).collect();
                                 match json_vals.as_slice() {

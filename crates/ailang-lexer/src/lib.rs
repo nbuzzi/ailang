@@ -66,6 +66,13 @@ pub enum Token {
     #[token("set")]      Set,
 
     // ── Literals ───────────────────────────────────────────────────────────
+    // Triple-quoted multiline strings: """...""" and '''...'''
+    #[regex(r#""""([^"]|"[^"]|""[^"])*""""#, lex_triple_string)]
+    #[regex(r#"'''([^']|'[^']|''[^'])*'''"#, lex_triple_string)]
+    // Raw strings: r"..." and r'...'
+    #[regex(r#"r"([^"\\]|\\.)*""#, lex_raw_string)]
+    #[regex(r#"r'([^'\\]|\\.)*'"#, lex_raw_string)]
+    // Standard quoted strings: "..." and '...'
     #[regex(r#""([^"\\]|\\.)*""#, lex_string)]
     #[regex(r"'([^'\\]|\\.)*'", lex_string)]
     Str(String),
@@ -115,6 +122,25 @@ impl Token {
         };
         Some(s.to_string())
     }
+}
+
+fn lex_triple_string(lex: &mut logos::Lexer<Token>) -> String {
+    let raw = lex.slice();
+    let inner = &raw[3..raw.len() - 3];
+    // Strip leading newline if present (standard heredoc behavior)
+    let s = if let Some(stripped) = inner.strip_prefix("\r\n") {
+        stripped
+    } else if let Some(stripped) = inner.strip_prefix('\n') {
+        stripped
+    } else {
+        inner
+    };
+    s.to_string()
+}
+
+fn lex_raw_string(lex: &mut logos::Lexer<Token>) -> String {
+    let raw = lex.slice();
+    raw[2..raw.len() - 1].to_string()
 }
 
 fn lex_string(lex: &mut logos::Lexer<Token>) -> String {
@@ -170,6 +196,34 @@ pub fn tokenize(input: &str) -> Result<Vec<(Token, std::ops::Range<usize>)>, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_triple_quote_multiline() {
+        let code = r#""""
+fn main() {
+    println!("Hello ${world}");
+}
+""""#;
+        let tokens = tokenize(code).unwrap();
+        assert_eq!(tokens.len(), 1);
+        if let Token::Str(s) = &tokens[0].0 {
+            assert!(s.contains("println!(\"Hello ${world}\");"));
+        } else {
+            panic!("Expected Str token");
+        }
+    }
+
+    #[test]
+    fn test_raw_string() {
+        let raw = r#"r"C:\Windows\System32\*""#;
+        let tokens = tokenize(raw).unwrap();
+        assert_eq!(tokens.len(), 1);
+        if let Token::Str(s) = &tokens[0].0 {
+            assert_eq!(s, r#"C:\Windows\System32\*"#);
+        } else {
+            panic!("Expected Str token");
+        }
+    }
 
     #[test]
     fn test_basic_pipeline() {

@@ -33,7 +33,27 @@ pub fn dispatch(
         "stat"          => fs::stat(args, input),
         "diff"          => fs::diff(args, input),
         "patch"         => fs::patch_file(args, input),
+
+        // ── First-Class Code Manipulation Primitives ─────────────────────────
+        "replace" => {
+            if args.len() >= 3 {
+                fs::replace_block(args, input)
+            } else {
+                text::replace_stream(args, input)
+            }
+        }
         "replace_block" => fs::replace_block(args, input),
+        "replace_all"   => {
+            if args.len() >= 3 {
+                fs::replace_all(args, input)
+            } else {
+                text::replace_stream(args, input)
+            }
+        }
+        "insert_after"  => fs::insert_after(args, input),
+        "insert_before" => fs::insert_before(args, input),
+        "prepend"       => fs::prepend(args, input),
+        "append"        => fs::append_file(args, input),
 
         // ── text ────────────────────────────────────────────────────────────
         "grep"    => text::grep(args, input),

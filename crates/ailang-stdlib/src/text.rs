@@ -85,6 +85,39 @@ pub fn sed(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
     }
 }
 
+/// replace("target", "replacement") — literal non-regex replacement on stream
+pub fn replace_stream(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
+    let target = get_str_arg(args, 0, "replace")?;
+    let replacement = get_str_arg(args, 1, "replace")?;
+
+    match input {
+        Some(Value::Str(s)) => {
+            Ok(vec![Value::Str(s.replace(&target, &replacement))])
+        }
+        Some(Value::Line(le)) => {
+            Ok(vec![Value::Line(LineEntry {
+                path: le.path,
+                line: le.line.replace(&target, &replacement),
+                num: le.num,
+            })])
+        }
+        Some(Value::List(items)) => {
+            Ok(items.into_iter().map(|item| {
+                if let Value::Str(s) = item {
+                    Value::Str(s.replace(&target, &replacement))
+                } else {
+                    item
+                }
+            }).collect())
+        }
+        None => Err(AilangError::RuntimeError {
+            stage: "replace".into(),
+            msg: "replace requires piped input or file argument".into(),
+        }),
+        other => Ok(vec![other.unwrap()]),
+    }
+}
+
 /// slice(n, m) — take elements n..m from a list or characters from a string
 pub fn slice(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
     let start = args.get(0).and_then(|v| v.as_int()).unwrap_or(0) as usize;
@@ -142,5 +175,15 @@ mod tests {
         ).unwrap();
         assert!(result[0].to_string().contains("DONE"));
         assert!(!result[0].to_string().contains("TODO"));
+    }
+
+    #[test]
+    fn test_replace_stream() {
+        let input = Value::Str("fn old_name()".into());
+        let result = replace_stream(
+            &[Value::Str("old_name".into()), Value::Str("new_name".into())],
+            Some(input),
+        ).unwrap();
+        assert_eq!(result[0], Value::Str("fn new_name()".into()));
     }
 }

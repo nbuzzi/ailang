@@ -91,22 +91,26 @@ ailang uses a **pipeline model**: data flows left to right through operations se
 <source> | <operation> | <operation> | <sink>
 ```
 
-### Core Operators
+### Core Operators & Syntax
 
-| Operator | Meaning | Tokens |
+| Operator / Syntax | Meaning | LLM Tokens |
 |:---:|:---|:---:|
+| `< file` | Stream input operator (`read(file)`) | 2 |
 | `\|` | Pipe output to next operation | 1 |
-| `>` | Write result to file (overwrite) | 1 |
+| `>` | Write result to file (creates parent dirs) | 1 |
 | `>>` | Append result to file | 1 |
+| `"""code"""` | Multiline heredoc raw string literal | ~length |
+| `;` | Pipeline statement terminator | 1 |
 | `?` | Inline filter shorthand | 1 |
 | `.field` | Access field of object/JSON | 1 |
-| `@` | Iterate over collection | 1 |
 | `{k: v}` | Construct an object | ~3 |
+| `cmd arg1 arg2` | Command-style parenthesis-free invocation | 0 parens/quotes |
 
 ### Standard Library
 
 ```
-fs      read(p)  write(p)  glob(pat)  walk(d)  cp  mv  rm  exists  stat  diff  patch  replace_block
+fs/code replace(f,old,new)  replace_all  insert_after  insert_before  prepend  append  patch  diff  read  write
+inspect search(dir,pat)  tree(dir,depth)  head(n,f)  tail(n,f)  glob(pat)  walk(d)  stat  exists
 text    grep(re)  sed(re,r)  lines  count  trim  upper  lower  slice(n,m)
 data    json  yaml  csv  map({})  filter()  sort()  group()  set()  unique  assert()
 net     net.get(url)  net.post(url,body)  net.download(url,path)
@@ -135,22 +139,38 @@ with open("out.json", "w") as fp:
 ```
 
 ```
-# ailang: 18 tokens  ✅  -81%
-glob("**/*.log") | grep("ERROR") | map({file:.path, err:.line}) > "out.json"
+# ailang: 7 tokens  ✅  -92%
+glob **/*.log | grep ERROR | map({file:.path, err:.line}) > out.json
 ```
 
 ---
 
-### Example 2 — Surgical Code Editing (No Full Rewrites!)
+### Example 2 — Surgical Code Editing & Generation (Zero Full Rewrites!)
 
-Instead of regenerating a 500-line file (costing 2,000 tokens), an agent replaces only the target block:
+Instead of regenerating a 500-line file (costing 2,000 tokens), an agent generates or edits code surgically:
 
+```ailang
+# 1. Generate full file with multiline raw literal (5 tokens syntax overhead):
+"""
+export function greet(name: string) {
+    return `Hello, ${name}!`;
+}
+""" > src/greet.ts;
+
+# 2. Surgical block replacement with fuzzy whitespace tolerance:
+replace src/greet.ts "Hello, ${name}!" "Welcome to ailang, ${name}!";
+
+# 3. Insert after anchor:
+insert_after src/greet.ts "return" "    console.log('Greeting served');";
+
+# 4. Prepend imports / header:
+prepend src/greet.ts "// Copyright 2026 ailang authors";
+
+# 5. Append exports:
+append src/greet.ts "export default greet;";
 ```
-# ailang: 12 tokens  ✅  -95%
-replace_block("src/main.rs", "fn old() { 1 }", "fn old() { 2 }")
-```
 
-ailang's `replace_block` features **fuzzy whitespace tolerance**, so slight indentation mismatches by LLMs succeed seamlessly.
+ailang's `replace` and `replace_block` feature **fuzzy whitespace tolerance**, so slight indentation mismatches by LLMs succeed seamlessly.
 
 ---
 

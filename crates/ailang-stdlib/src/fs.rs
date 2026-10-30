@@ -383,6 +383,148 @@ pub fn replace_block(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<
     Ok(vec![Value::Bool(true)])
 }
 
+/// insert_after("file", "target", "content")
+/// Inserts `content` immediately following the line containing `target`.
+pub fn insert_after(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
+    let path = get_str_arg(args, 0, "insert_after")?;
+    let target = get_str_arg(args, 1, "insert_after")?;
+    let content_to_insert = get_str_arg(args, 2, "insert_after")?;
+
+    let file_content = read_file_string(Path::new(&path))?;
+
+    // 1. Exact match
+    if let Some(pos) = file_content.find(&target) {
+        let after_target = pos + target.len();
+        let next_newline = file_content[after_target..].find('\n')
+            .map(|i| after_target + i + 1)
+            .unwrap_or(file_content.len());
+
+        let mut out = String::with_capacity(file_content.len() + content_to_insert.len() + 2);
+        out.push_str(&file_content[..next_newline]);
+        out.push_str(&content_to_insert);
+        if !content_to_insert.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&file_content[next_newline..]);
+        std::fs::write(&path, &out)?;
+        return Ok(vec![Value::Bool(true)]);
+    }
+
+    // 2. Fuzzy line match
+    let lines: Vec<&str> = file_content.lines().collect();
+    let target_trim = target.trim();
+    if let Some(idx) = lines.iter().position(|l| l.trim().contains(target_trim)) {
+        let mut new_lines = Vec::new();
+        new_lines.extend_from_slice(&lines[..=idx]);
+        new_lines.push(&content_to_insert);
+        new_lines.extend_from_slice(&lines[idx + 1..]);
+        let mut out = new_lines.join("\n");
+        if file_content.ends_with('\n') {
+            out.push('\n');
+        }
+        std::fs::write(&path, &out)?;
+        return Ok(vec![Value::Bool(true)]);
+    }
+
+    Err(AilangError::EditError {
+        msg: format!("Target '{}' not found in '{}'", target, path),
+    })
+}
+
+/// insert_before("file", "target", "content")
+/// Inserts `content` immediately preceding the line containing `target`.
+pub fn insert_before(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
+    let path = get_str_arg(args, 0, "insert_before")?;
+    let target = get_str_arg(args, 1, "insert_before")?;
+    let content_to_insert = get_str_arg(args, 2, "insert_before")?;
+
+    let file_content = read_file_string(Path::new(&path))?;
+
+    // 1. Exact match
+    if let Some(pos) = file_content.find(&target) {
+        let prev_newline = file_content[..pos].rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        let mut out = String::with_capacity(file_content.len() + content_to_insert.len() + 2);
+        out.push_str(&file_content[..prev_newline]);
+        out.push_str(&content_to_insert);
+        if !content_to_insert.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&file_content[prev_newline..]);
+        std::fs::write(&path, &out)?;
+        return Ok(vec![Value::Bool(true)]);
+    }
+
+    // 2. Fuzzy line match
+    let lines: Vec<&str> = file_content.lines().collect();
+    let target_trim = target.trim();
+    if let Some(idx) = lines.iter().position(|l| l.trim().contains(target_trim)) {
+        let mut new_lines = Vec::new();
+        new_lines.extend_from_slice(&lines[..idx]);
+        new_lines.push(&content_to_insert);
+        new_lines.extend_from_slice(&lines[idx..]);
+        let mut out = new_lines.join("\n");
+        if file_content.ends_with('\n') {
+            out.push('\n');
+        }
+        std::fs::write(&path, &out)?;
+        return Ok(vec![Value::Bool(true)]);
+    }
+
+    Err(AilangError::EditError {
+        msg: format!("Target '{}' not found in '{}'", target, path),
+    })
+}
+
+/// prepend("file", "content") — inserts content at the very start of file (line 1)
+pub fn prepend(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
+    let path = get_str_arg(args, 0, "prepend")?;
+    let content_to_prepend = get_str_arg(args, 1, "prepend")?;
+
+    let existing = read_file_string(Path::new(&path)).unwrap_or_default();
+    let mut out = String::with_capacity(content_to_prepend.len() + existing.len() + 2);
+    out.push_str(&content_to_prepend);
+    if !content_to_prepend.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&existing);
+    std::fs::write(&path, &out)?;
+    Ok(vec![Value::Bool(true)])
+}
+
+/// append_file("file", "content") — appends content to the end of file
+pub fn append_file(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
+    let path = get_str_arg(args, 0, "append")?;
+    let content_to_append = get_str_arg(args, 1, "append")?;
+
+    let existing = read_file_string(Path::new(&path)).unwrap_or_default();
+    let mut out = String::with_capacity(existing.len() + content_to_append.len() + 2);
+    out.push_str(&existing);
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&content_to_append);
+    if !content_to_append.ends_with('\n') {
+        out.push('\n');
+    }
+    std::fs::write(&path, &out)?;
+    Ok(vec![Value::Bool(true)])
+}
+
+/// replace_all("file", "target", "replacement") — replaces all matches in file
+pub fn replace_all(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
+    let path = get_str_arg(args, 0, "replace_all")?;
+    let target = get_str_arg(args, 1, "replace_all")?;
+    let replacement = get_str_arg(args, 2, "replace_all")?;
+
+    let content = read_file_string(Path::new(&path))?;
+    let out = content.replace(&target, &replacement);
+    std::fs::write(&path, &out)?;
+    Ok(vec![Value::Bool(true)])
+}
+
 /// patch("file", diff_content) — apply unified diff to a file
 pub fn patch_file(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
     let path = get_str_arg(args, 0, "patch")?;
@@ -517,5 +659,51 @@ mod tests {
         let t = tail(&[Value::Int(2)], input).unwrap();
         assert_eq!(t.len(), 2);
         assert_eq!(t[0], Value::Str("4".into()));
+    }
+
+    #[test]
+    fn test_insert_after_and_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "A\nB\nC\n").unwrap();
+
+        // insert_after B -> X
+        insert_after(&[
+            Value::Str(file_path.to_string_lossy().into()),
+            Value::Str("B".into()),
+            Value::Str("X".into()),
+        ], None).unwrap();
+        let c1 = std::fs::read_to_string(&file_path).unwrap();
+        assert!(c1.contains("A\nB\nX\nC"));
+
+        // insert_before A -> START
+        insert_before(&[
+            Value::Str(file_path.to_string_lossy().into()),
+            Value::Str("A".into()),
+            Value::Str("START".into()),
+        ], None).unwrap();
+        let c2 = std::fs::read_to_string(&file_path).unwrap();
+        assert!(c2.starts_with("START\nA"));
+    }
+
+    #[test]
+    fn test_prepend_and_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "content\n").unwrap();
+
+        prepend(&[
+            Value::Str(file_path.to_string_lossy().into()),
+            Value::Str("// header".into()),
+        ], None).unwrap();
+
+        append_file(&[
+            Value::Str(file_path.to_string_lossy().into()),
+            Value::Str("// footer".into()),
+        ], None).unwrap();
+
+        let c = std::fs::read_to_string(&file_path).unwrap();
+        assert!(c.starts_with("// header\ncontent"));
+        assert!(c.ends_with("// footer\n"));
     }
 }
