@@ -98,16 +98,16 @@ The table below contrasts real-world agent tasks across common runtimes. Token c
 ```mermaid
 flowchart TD
     subgraph AgentClient["AI Agent / LLM Client"]
-        CLI["CLI Execution (ailang \"...\")"]
-        MCP["Model Context Protocol (JSON-RPC stdio)"]
-        Script["File Runner (ailang run script.al)"]
+        CLI["CLI Execution: ailang 'expr'"]
+        MCP["Model Context Protocol: JSON-RPC stdio"]
+        Script["Script Runner: ailang run script.al"]
     end
 
     subgraph ailangCore["ailang Native Rust Runtime"]
         subgraph PipelineEngine["Execution Pipeline"]
-            Lexer["Zero-Copy Lexer (logos)\n• Command syntax\n• Multiline heredocs\n• Raw strings r\"...\""]
-            Parser["Recursive Descent Parser\n• Stream input <\n• Sink redirection > >>\n• Multi-pipeline ;"]
-            Evaluator["Streaming Evaluator\n• IndexMap Determinism\n• Token-Compressed Output\n• Piped Stdin / Stdout"]
+            Lexer["Zero-Copy Lexer (logos)<br/>• Command syntax<br/>• Multiline heredocs<br/>• Raw strings r'...'"]
+            Parser["Recursive Descent Parser<br/>• Stream input operator<br/>• Sink redirection<br/>• Multi-pipeline support"]
+            Evaluator["Streaming Evaluator<br/>• IndexMap Determinism<br/>• Token-Compressed Output<br/>• Piped Stdin and Stdout"]
         end
 
         subgraph Stdlib["Standard Library (Zero Imports)"]
@@ -115,7 +115,7 @@ flowchart TD
             Edit["code: replace, replace_all, insert_after/before, prepend, append, patch"]
             Inspect["inspect: search, tree, head, tail, lines"]
             Data["data: json, yaml, csv, map, filter, sort, group, set, unique, assert"]
-            SysNet["sys & net: exec, env, pwd, net.get, net.post, download"]
+            SysNet["sys and net: exec, env, pwd, net.get, net.post, download"]
             Crypto["crypto: sha256, sha512, md5, base64.enc/dec"]
         end
 
@@ -147,13 +147,13 @@ sequenceDiagram
     participant MCP as ailang Native Engine
     participant FS as Local Filesystem & Processes
 
-    LLM->>MCP: tools/call ailang { expr: "replace src/main.rs 'old_fn' 'new_fn'" }
+    LLM->>MCP: tools/call ailang expr='replace src/main.rs old_fn new_fn'
     activate MCP
     MCP->>FS: Read target file (auto-detect UTF-8 / BOM / UTF-16)
     FS-->>MCP: File content
     Note over MCP: Exact match attempt -> Fuzzy whitespace fallback
     MCP->>FS: Surgically write patched file
-    MCP-->>LLM: {"content": [{"type": "text", "text": "true"}]}
+    MCP-->>LLM: JSON-RPC Result: true
     deactivate MCP
     Note over LLM: Agent continues workflow without context bloating!
 ```
