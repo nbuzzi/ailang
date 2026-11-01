@@ -8,21 +8,14 @@ use std::process::{Command, Stdio};
 pub fn exec(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
     let cmd = get_str_arg(args, 0, "exec")?;
 
-    let mut command = if cfg!(target_os = "windows") {
-        let mut c = Command::new("cmd");
-        c.args(["/C", &cmd]);
-        c
-    } else {
-        let mut c = Command::new("sh");
-        c.args(["-c", &cmd]);
-        c
-    };
+    let mut command = Command::new(&cmd);
 
     // Additional args as extra parameters
-    if let Some(Value::List(extra_args)) = args.get(1) {
-        for a in extra_args {
-            command.arg(a.to_string());
-        }
+    if let Some(extra) = args.get(1) {
+        let Value::List(extra_args) = extra else {
+            return Err(AilangError::TypeError { expected: "List of process arguments".into(), got: extra.to_string() });
+        };
+        command.args(extra_args.iter().map(ToString::to_string));
     }
 
     let output = if let Some(ref in_val) = input {
@@ -32,9 +25,17 @@ pub fn exec(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
         let mut child = command.spawn()?;
         if let Some(mut stdin) = child.stdin.take() {
             let bytes = in_val.to_string();
-            let _ = stdin.write_all(bytes.as_bytes());
+            // Feed stdin concurrently: a child may fill stdout before consuming
+            // all input. wait_with_output drains stdout/stderr in parallel.
+            let writer = std::thread::spawn(move || stdin.write_all(bytes.as_bytes()));
+            let output = child.wait_with_output()?;
+            writer.join().map_err(|_| AilangError::RuntimeError {
+                stage: "exec".into(), msg: "stdin writer failed".into(),
+            })??;
+            output
+        } else {
+            child.wait_with_output()?
         }
-        child.wait_with_output()?
     } else {
         command.output()?
     };
@@ -92,16 +93,20 @@ mod tests {
 
     #[test]
     fn test_exec_echo() {
-        let cmd = if cfg!(target_os = "windows") { "echo hello" } else { "echo 'hello'" };
-        let result = exec(&[Value::Str(cmd.into())], None).unwrap();
+        let args = if cfg!(target_os = "windows") {
+            vec![Value::Str("cmd".into()), Value::List(vec![Value::Str("/C".into()), Value::Str("echo hello".into())])]
+        } else {
+            vec![Value::Str("printf".into()), Value::List(vec![Value::Str("hello".into())])]
+        };
+        let result = exec(&args, None).unwrap();
         assert!(result[0].to_string().contains("hello"));
     }
 
     #[test]
     fn test_exec_piped_stdin() {
-        let cmd = if cfg!(target_os = "windows") { "findstr world" } else { "grep world" };
+        let cmd = if cfg!(target_os = "windows") { "findstr" } else { "grep" };
         let input = Some(Value::Str("hello\nworld\nfoo".into()));
-        let result = exec(&[Value::Str(cmd.into())], input).unwrap();
+        let result = exec(&[Value::Str(cmd.into()), Value::List(vec![Value::Str("world".into())])], input).unwrap();
         assert!(result[0].to_string().contains("world"));
     }
 

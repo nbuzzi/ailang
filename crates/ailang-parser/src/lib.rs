@@ -239,7 +239,7 @@ impl<'a> Parser<'a> {
 
                 // Check if followed by arguments (before |, >, >>, ;, or EOF)
                 if self.has_command_args_ahead() {
-                    let args = self.parse_command_args_until_delimiter()?;
+                    let args = self.parse_call_args()?;
                     Ok(Stage::Call(Call { name: kw_name, args }))
                 } else {
                     Ok(Stage::Keyword(kw_name))
@@ -373,6 +373,7 @@ impl<'a> Parser<'a> {
     /// Parse a single command-style argument (supports unquoted globs/paths/strings)
     fn parse_command_arg(&mut self) -> AilangResult<Expr> {
         match self.peek().cloned() {
+            Some(Token::LBracket) => self.parse_primary(),
             Some(Token::Str(s)) => {
                 self.advance();
                 Ok(Expr::Str(s))
@@ -502,14 +503,14 @@ impl<'a> Parser<'a> {
     /// Build a potentially namespaced call name: `net.get`, `fs.read`, `base64.enc`
     fn build_call_name(&mut self) -> AilangResult<String> {
         let first = self.expect_ident()?;
-        if matches!(self.peek(), Some(Token::Dot)) {
-            if self.pos + 1 < self.tokens.len() {
-                if let Token::Ident(_) = &self.tokens[self.pos + 1].0 {
-                    self.advance(); // consume dot
-                    let method = self.expect_ident()?;
-                    return Ok(format!("{}.{}", first, method));
-                }
-            }
+        if matches!(self.peek(), Some(Token::Dot))
+            && self.tokens[self.pos - 1].1.end == self.tokens[self.pos].1.start
+            && self.pos + 1 < self.tokens.len()
+            && matches!(&self.tokens[self.pos + 1].0, Token::Ident(_))
+            && self.tokens[self.pos].1.end == self.tokens[self.pos + 1].1.start {
+            self.advance(); // consume dot
+            let method = self.expect_ident()?;
+            return Ok(format!("{}.{}", first, method));
         }
         Ok(first)
     }
@@ -589,6 +590,19 @@ impl<'a> Parser<'a> {
 
     fn parse_primary(&mut self) -> AilangResult<Expr> {
         match self.peek().cloned() {
+            Some(Token::LBracket) => {
+                self.advance();
+                let mut items = Vec::new();
+                if !matches!(self.peek(), Some(Token::RBracket)) {
+                    loop {
+                        items.push(self.parse_expr()?);
+                        if !matches!(self.peek(), Some(Token::Comma)) { break; }
+                        self.advance();
+                    }
+                }
+                self.expect(&Token::RBracket)?;
+                Ok(Expr::List(items))
+            }
             Some(Token::Null)       => { self.advance(); Ok(Expr::Null) }
             Some(Token::True)       => { self.advance(); Ok(Expr::Bool(true)) }
             Some(Token::False)      => { self.advance(); Ok(Expr::Bool(false)) }
@@ -614,10 +628,9 @@ impl<'a> Parser<'a> {
                     let field = self.expect_ident()?;
                     parts.push(field);
                 }
-                if matches!(self.peek(), Some(Token::Dot)) {
+                if matches!(self.peek(), Some(Token::LParen)) {
+                    let method = parts.pop().unwrap();
                     self.advance();
-                    let method = self.expect_ident()?;
-                    self.expect(&Token::LParen)?;
                     let args = self.parse_arg_list()?;
                     self.expect(&Token::RParen)?;
                     Ok(Expr::FieldMethod(parts, method, args))
@@ -701,5 +714,23 @@ mod tests {
         assert_eq!(ast.stages.len(), 1);
         assert!(matches!(&ast.stages[0], Stage::Literal(ailang_core::Value::Str(s)) if s == "fn hello() {}"));
         assert!(matches!(&ast.sink, Some(Sink::Write(s)) if s == "main.rs"));
+    }
+
+    #[test]
+    fn argument_lists_and_spaced_directory_dot() {
+        let ast = parse("exec('git', ['status', '--short'])").unwrap();
+        assert!(matches!(&ast.stages[0], Stage::Call(c) if matches!(&c.args[1], Expr::List(v) if v.len() == 2)));
+        let ast = parse("search . needle").unwrap();
+        assert!(matches!(&ast.stages[0], Stage::Call(c) if c.name == "search" && c.args.len() == 2));
+        let ast = parse("write('output', 'hello')").unwrap();
+        assert!(matches!(&ast.stages[0], Stage::Call(c) if c.name == "write" && c.args.len() == 2));
+        assert!(parse("exec('git', ['status')").is_err());
+    }
+
+    #[test]
+    fn field_methods_are_parsed_as_methods() {
+        let ast = parse("filter(.name.starts_with('npc_'))").unwrap();
+        assert!(matches!(&ast.stages[0], Stage::Filter(Expr::FieldMethod(parts, method, _))
+            if parts == &["name"] && method == "starts_with"));
     }
 }

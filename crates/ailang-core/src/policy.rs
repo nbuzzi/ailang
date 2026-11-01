@@ -34,17 +34,18 @@ impl SecurityPolicy {
         };
 
         // Normalize components without requiring the file to exist yet
-        let normalized = normalize_path(&abs_target);
+        let normalized = resolve_path(&abs_target)?;
 
-        let allowed = self.allowed_dirs.iter().any(|dir| {
+        let mut allowed = false;
+        for dir in &self.allowed_dirs {
             let abs_dir = if dir.is_absolute() {
                 dir.clone()
             } else {
                 std::env::current_dir().unwrap_or_default().join(dir)
             };
-            let norm_dir = normalize_path(&abs_dir);
-            normalized.starts_with(&norm_dir)
-        });
+            let norm_dir = resolve_path(&abs_dir)?;
+            allowed |= normalized.starts_with(&norm_dir);
+        }
 
         if !allowed {
             return Err(AilangError::SecurityError {
@@ -74,9 +75,9 @@ impl SecurityPolicy {
     /// Process execution can bypass every other restriction, so it is
     /// disabled in read-only mode and whenever a directory sandbox is active.
     pub fn check_exec(&self) -> AilangResult<()> {
-        if self.read_only || !self.allowed_dirs.is_empty() {
+        if self.read_only || self.no_net || !self.allowed_dirs.is_empty() {
             return Err(AilangError::SecurityError {
-                msg: "exec denied: disabled in --read-only / --allow-dir sandbox mode".into(),
+                msg: "exec denied: disabled in --read-only / --allow-dir / --no-net mode".into(),
             });
         }
         Ok(())
@@ -92,7 +93,9 @@ impl SecurityPolicy {
     }
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
+// Resolve links before handling `..`, including links in the existing parent
+// of a new file. Pure lexical normalization permits junction/symlink escapes.
+fn resolve_path(path: &Path) -> std::io::Result<PathBuf> {
     let mut out = PathBuf::new();
     for comp in path.components() {
         match comp {
@@ -100,10 +103,17 @@ fn normalize_path(path: &Path) -> PathBuf {
                 out.pop();
             }
             std::path::Component::CurDir => {}
-            other => out.push(other.as_os_str()),
+            other => {
+                out.push(other.as_os_str());
+                match std::fs::symlink_metadata(&out) {
+                    Ok(_) => out = std::fs::canonicalize(&out)?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
+            }
         }
     }
-    out
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -227,7 +237,8 @@ pub fn unified_diff(label: &str, old: &str, new: &str) -> String {
         let new_count = hunk.iter().filter(|o| !matches!(o, Op::Del(_))).count();
         out.push_str(&format!(
             "@@ -{},{} +{},{} @@\n",
-            old_pos[start] + 1, old_count, new_pos[start] + 1, new_count
+            old_pos[start] + usize::from(old_count > 0), old_count,
+            new_pos[start] + usize::from(new_count > 0), new_count
         ));
         for op in hunk {
             match *op {
@@ -257,6 +268,12 @@ mod tests {
     #[test]
     fn diff_empty_when_equal() {
         assert_eq!(unified_diff("f", "a\nb", "a\nb"), "");
+    }
+
+    #[test]
+    fn diff_empty_ranges_use_zero_based_positions() {
+        assert!(unified_diff("f", "", "new\n").contains("@@ -0,0 +1,1 @@"));
+        assert!(unified_diff("f", "old\n", "").contains("@@ -1,1 +0,0 @@"));
     }
 
     #[test]

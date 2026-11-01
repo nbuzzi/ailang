@@ -10,6 +10,8 @@ use std::collections::HashMap;
 #[derive(Default, Clone)]
 pub struct Context {
     pub vars: HashMap<String, Vec<Value>>,
+    pub policy: ailang_core::SecurityPolicy,
+    pub dry_run_entries: Vec<ailang_core::DryRunEntry>,
 }
 
 impl Context {
@@ -48,7 +50,7 @@ pub fn eval_pipeline(
     let mut stream: Vec<Value> = vec![];
 
     for (i, stage) in pipeline.stages.iter().enumerate() {
-        let input = if i == 0 { None } else { collapse_stream(stream.clone()) };
+        let input = if i == 0 { None } else { collapse_stream(std::mem::take(&mut stream)) };
         stream = eval_stage(stage, input, ctx, rt)?;
     }
 
@@ -56,6 +58,7 @@ pub fn eval_pipeline(
     if let Some(sink) = &pipeline.sink {
         let content = match stream.as_slice() {
             [Value::Str(s)] => s.clone(),
+            [single] => serde_json::to_string(&value_to_json(single)).unwrap_or_default(),
             values => {
                 let serialized: Vec<serde_json::Value> = values.iter()
                     .map(value_to_json)
@@ -63,27 +66,11 @@ pub fn eval_pipeline(
                 serde_json::to_string(&serialized).unwrap_or_default()
             }
         };
-        match sink {
-            Sink::Write(path) => {
-                if let Some(parent) = std::path::Path::new(path).parent() {
-                    if !parent.as_os_str().is_empty() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                }
-                std::fs::write(path, content)?;
-            }
-            Sink::Append(path) => {
-                if let Some(parent) = std::path::Path::new(path).parent() {
-                    if !parent.as_os_str().is_empty() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                }
-                use std::io::Write;
-                let mut f = std::fs::OpenOptions::new()
-                    .create(true).append(true).open(path)?;
-                writeln!(f, "{}", content)?;
-            }
-        }
+        let (path, append) = match sink {
+            Sink::Write(path) => (path, false),
+            Sink::Append(path) => (path, true),
+        };
+        stdlib::execution::write_sink(path, &content, append, &ctx.policy, &mut ctx.dry_run_entries)?;
         return Ok(vec![]);
     }
 
@@ -155,11 +142,16 @@ fn eval_call(
     rt: &tokio::runtime::Handle,
 ) -> AilangResult<Vec<Value>> {
     let arg_input = input.clone().unwrap_or(Value::Null);
-    let args: Vec<Value> = call.args.iter()
-        .map(|expr| eval_expr(expr, &arg_input, ctx))
+    let args: Vec<Value> = call.args.iter().enumerate()
+        .map(|(i, expr)| {
+            if i == 0 && matches!(call.name.as_str(), "sort" | "group" | "set") {
+                if let Expr::Field(parts) = expr { return Ok(Value::Str(parts.join("."))); }
+            }
+            eval_expr(expr, &arg_input, ctx)
+        })
         .collect::<AilangResult<Vec<_>>>()?;
 
-    stdlib::dispatch(&call.name, &args, input, rt)
+    stdlib::execution::dispatch(&call.name, &args, input, rt, &ctx.policy, &mut ctx.dry_run_entries)
 }
 
 fn eval_keyword(

@@ -27,6 +27,10 @@ struct JsonRpcResponse {
 /// Runs the Model Context Protocol (MCP) server over stdin/stdout.
 /// Can be plugged directly into Claude Desktop, Cursor, Antigravity, or any MCP client.
 pub fn run_stdio_server() -> io::Result<()> {
+    run_stdio_server_with_policy(ailang_core::SecurityPolicy::default())
+}
+
+pub fn run_stdio_server_with_policy(policy: ailang_core::SecurityPolicy) -> io::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let reader = stdin.lock();
@@ -34,6 +38,7 @@ pub fn run_stdio_server() -> io::Result<()> {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create async runtime");
     let handle = rt.handle().clone();
     let mut ctx = Context::new();
+    ctx.policy = policy;
 
     for line_res in reader.lines() {
         let line = line_res?;
@@ -58,6 +63,8 @@ pub fn run_stdio_server() -> io::Result<()> {
 
         // If it's a notification without an id (e.g. notifications/initialized)
         let is_notification = req.id.is_none();
+        // Notifications never receive responses and cannot invoke tools.
+        if is_notification { continue; }
         let id = req.id.unwrap_or(JsonValue::Null);
 
         match req.method.as_str() {
@@ -104,7 +111,7 @@ pub fn run_stdio_server() -> io::Result<()> {
                         "tools": [
                             {
                                 "name": "ailang",
-                                "description": "Execute an ailang pipeline script. Designed for AI agents: file I/O, regex, data transformation, HTTP, and system operations with up to 80% token savings.",
+                                "description": "Execute an ailang pipeline: file I/O, regex, data transformation, HTTP and system operations. Server execution policy applies to every call.",
                                 "inputSchema": {
                                     "type": "object",
                                     "properties": {
@@ -125,8 +132,11 @@ pub fn run_stdio_server() -> io::Result<()> {
             }
 
             "tools/call" => {
+                ctx.dry_run_entries.clear();
+                let mut is_error = false;
                 let expr_opt = req.params
                     .as_ref()
+                    .filter(|p| p.get("name").and_then(JsonValue::as_str) == Some("ailang"))
                     .and_then(|p| p.get("arguments"))
                     .and_then(|args| args.get("expr"))
                     .and_then(|e| e.as_str());
@@ -136,25 +146,30 @@ pub fn run_stdio_server() -> io::Result<()> {
                         Ok(program) => match eval_program(&program, &mut ctx, &handle) {
                             Ok(values) => {
                                 let json_vals: Vec<_> = values.iter().map(value_to_json).collect();
-                                match json_vals.as_slice() {
+                                if ctx.policy.dry_run {
+                                    json!({"result": json_vals, "dry_run": ctx.dry_run_entries}).to_string()
+                                } else { match json_vals.as_slice() {
                                     [] => "{}".to_string(),
                                     [single] => serde_json::to_string(single).unwrap_or_default(),
                                     multiple => serde_json::to_string(multiple).unwrap_or_default(),
-                                }
+                                } }
                             }
                             Err(e) => {
+                                is_error = true;
                                 let err = ErrorOutput::from(&e);
                                 serde_json::to_string(&err).unwrap_or_else(|_| e.to_string())
                             }
                         },
                         Err(e) => {
+                            is_error = true;
                             let err = ErrorOutput::from(&e);
                             serde_json::to_string(&err).unwrap_or_else(|_| e.to_string())
                         }
                     },
                     None => {
+                        is_error = true;
                         serde_json::to_string(&json!({
-                            "error": "Missing required argument 'expr'",
+                            "error": "Expected tool name 'ailang' and string argument 'expr'",
                             "code": 2
                         })).unwrap_or_default()
                     }
@@ -164,6 +179,7 @@ pub fn run_stdio_server() -> io::Result<()> {
                     jsonrpc: "2.0",
                     id,
                     result: Some(json!({
+                        "isError": is_error,
                         "content": [
                             {
                                 "type": "text",

@@ -62,9 +62,17 @@ Float         ::= "-"? [0-9]+ "." [0-9]+ ;
 
 ## 2. Evaluation Model
 
-* **Streaming Semantics:** Stages pass data sequentially through the pipeline from left to right.
+* **Pipeline Semantics:** Stages pass buffered values from left to right; the evaluator does not yet implement incremental streaming.
 * **Typing:** Dynamic, strongly typed values (`Null`, `Bool`, `Int`, `Float`, `Str`, `List`, `Object`, `FileEntry`, `Line`).
 * **Error Semantics:** Non-zero exit code with single-line minified JSON on `stderr` conforming to:
   ```json
   {"error": "message", "code": 1, "stage": "stage_name"}
   ```
+
+## 3. File sinks and execution policy
+
+A sink writes a single string as raw text, a single non-string value as its JSON representation, and multiple values as a JSON array. A parsed object or array therefore keeps its structure when saved. Raw strings are not implicitly JSON-quoted. `>>` appends content and a newline.
+
+CLI and MCP use the same execution policy. Flags also apply to script execution. Dry-run previews are independent against the current filesystem and return action records; they do not simulate dependent multi-statement transactions. See the README for full scope and isolation limitations.
+
+`sort(.field)`, `group(.field)` and `set(.field, value)` treat the first field argument as a field name, not an expression evaluated against the whole input. Sort compares numeric values numerically. `exec(program, [args])` launches a program directly without shell expansion.

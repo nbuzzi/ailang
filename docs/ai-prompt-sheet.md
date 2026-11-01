@@ -4,10 +4,10 @@ Drop this compact cheatsheet into your LLM agent's system prompt to enable nativ
 
 ---
 
-## ⚡ System Prompt Snippet (< 85 tokens)
+## ⚡ System Prompt Snippet (token count depends on the model)
 
 ```
-AISL: token-minimized scripting. Invoke: ailang "expr" or ailang run script.al
+ailang: token-minimized scripting. Invoke: ailang "expr" or ailang run script.al
 fs/code: < f (stream input)  > f (write)  >> f (append)  """code""" > f
 edit: replace(f,old,new) replace_all(f,old,new) insert_after(f,anchor,code) insert_before(f,anchor,code) prepend(f,code) append(f,code) patch(f,diff)
 inspect: search(dir,pat) tree(dir,depth) head(n,f) tail(n,f) lines glob(pat)
@@ -46,8 +46,8 @@ ex: replace src/main.rs "old_fn" "new_fn"; < Cargo.toml | lines | count
 * `tail(n, [file])`: Takes last `n` lines from stream or file.
 * `glob(pattern)`: Returns files matching pattern (supports `**/*`).
 * `walk(dir)`: Recursively traverses directory.
-* `cp(dest)`: Copies file or dir to destination.
-* `mv(dest)`: Moves/renames file or dir.
+* `cp(src, dest)` or `src | cp(dest)`: Copies a file to destination.
+* `mv(src, dest)` or `src | mv(dest)`: Moves/renames a file or directory.
 * `rm(path)`: Removes file or directory recursively.
 * `exists(path)`: Returns boolean `true`/`false`.
 * `stat(path)`: Returns object with size, ext, name, is_dir.
@@ -81,7 +81,7 @@ ex: replace src/main.rs "old_fn" "new_fn"; < Cargo.toml | lines | count
 * `net.download(url, path)`: Streams remote file directly to disk.
 
 ### System (`sys`)
-* `exec(command, [args])`: Spawns command and returns stdout. Piped input is passed to process stdin (`read('file') | exec('sort')`).
+* `exec(command, [args])`: Launches the executable directly with literal arguments and returns stdout; no implicit shell. Example: `exec("git", ["status"])`. Piped input is passed to process stdin (`read('file') | exec('sort')`).
 * `env(var_name)`: Returns value of environment variable.
 * `pwd()`: Returns current working directory.
 * `cd(path)`: Changes working directory.
@@ -112,3 +112,7 @@ Configure in Claude Desktop (`claude_desktop_config.json`):
   }
 }
 ```
+
+## Execution policy
+
+Global flags apply to inline expressions, `run`, and `serve`: `--read-only`, `--dry-run`, `--allow-dir DIR`, `--no-net`. Tool failures set MCP `isError`. Dry-run returns JSON with action records and diffs; previews do not update a virtual filesystem. See the README for policy scope and limitations. Pipelines currently buffer their values in memory.

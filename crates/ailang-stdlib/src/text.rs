@@ -24,11 +24,20 @@ pub fn grep(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
         }
         Some(Value::List(items)) => {
             // Input is a list — filter items whose string representation matches
-            Ok(items.into_iter().filter(|v| re.is_match(&v.to_string())).collect())
+            let mut results = Vec::new();
+            for item in items {
+                if matches!(item, Value::FileEntry(_)) {
+                    results.extend(grep(args, Some(item))?);
+                } else if re.is_match(&item.to_string()) {
+                    results.push(item);
+                }
+            }
+            Ok(results)
         }
         Some(Value::FileEntry(fe)) => {
+            if fe.is_dir { return Ok(vec![]); }
             // Input is a file entry — read the file and grep it
-            let content = std::fs::read_to_string(&fe.path)
+            let content = crate::fs::read_file_string(std::path::Path::new(&fe.path))
                 .map_err(AilangError::IoError)?;
             let results: Vec<Value> = content
                 .lines()
@@ -41,6 +50,9 @@ pub fn grep(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
                 }))
                 .collect();
             Ok(results)
+        }
+        Some(Value::Line(line)) => {
+            Ok(if re.is_match(&line.line) { vec![Value::Line(line)] } else { vec![] })
         }
         None => Err(AilangError::RuntimeError {
             stage: "grep".into(),

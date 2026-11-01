@@ -19,9 +19,14 @@ pub fn sort(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
     };
 
     items.sort_by(|a, b| {
-        let va = field.as_ref().map(|f| a.get_field(f)).unwrap_or_else(|| a.clone());
-        let vb = field.as_ref().map(|f| b.get_field(f)).unwrap_or_else(|| b.clone());
-        va.to_string().cmp(&vb.to_string())
+        let va = field.as_ref().map(|f| a.get_path(f)).unwrap_or_else(|| a.clone());
+        let vb = field.as_ref().map(|f| b.get_path(f)).unwrap_or_else(|| b.clone());
+        match (&va, &vb) {
+            (Value::Int(a), Value::Int(b)) => a.cmp(b),
+            (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) =>
+                va.as_f64().unwrap().total_cmp(&vb.as_f64().unwrap()),
+            _ => va.to_string().cmp(&vb.to_string()),
+        }
     });
 
     Ok(vec![Value::List(items)])
@@ -44,7 +49,7 @@ pub fn group(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
 
     let mut groups: Map = Map::new();
     for item in items {
-        let key = item.get_field(&field).to_string();
+        let key = item.get_path(&field).to_string();
         if let Some(Value::List(list)) = groups.get_mut(&key) {
             list.push(item);
         } else {

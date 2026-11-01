@@ -1,6 +1,7 @@
 use ailang_core::error::ErrorOutput;
-use ailang_eval::{eval_pipeline, eval_program, value_to_json, Context};
-use ailang_parser::{parse, parse_program};
+use ailang_eval::{eval_program, value_to_json, Context};
+use ailang_parser::parse_program;
+use ailang_core::SecurityPolicy;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process;
@@ -28,17 +29,21 @@ struct Cli {
           help = "Output format: auto (token-compressed) | json | raw | pretty")]
     output: String,
 
-    /// Preview actions without writing to disk
-    #[arg(long, help = "Simulate operations without making changes")]
+    /// Preview actions without changing target files
+    #[arg(long, global = true, help = "Preview operations without changing targets")]
     dry_run: bool,
 
     /// Disallow any file write or mutation operations
-    #[arg(long, help = "Strict read-only execution mode")]
+    #[arg(long, global = true, help = "Strict read-only execution mode")]
     read_only: bool,
 
     /// Restrict file access to specific directory paths
-    #[arg(long, value_name = "DIR", help = "Restrict file operations to this directory")]
+    #[arg(long, global = true, value_name = "DIR", help = "Restrict file operations to this directory")]
     allow_dir: Option<PathBuf>,
+
+    /// Deny network operations and subprocesses that could bypass the policy
+    #[arg(long, global = true)]
+    no_net: bool,
 }
 
 #[derive(Subcommand)]
@@ -55,7 +60,7 @@ enum Commands {
         #[arg(long, default_value_t = true)]
         mcp: bool,
     },
-    /// Benchmark expression token usage against Python and PowerShell
+    /// Measure source size and parse latency (does not execute the expression)
     Bench {
         /// Expression to benchmark
         #[arg(value_name = "EXPRESSION")]
@@ -67,11 +72,17 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
+    let policy = SecurityPolicy {
+        dry_run: cli.dry_run,
+        read_only: cli.read_only,
+        no_net: cli.no_net,
+        allowed_dirs: cli.allow_dir.iter().cloned().collect(),
+    };
 
     if let Some(cmd) = cli.command {
         match cmd {
             Commands::Serve { .. } => {
-                if let Err(e) = ailang_mcp::run_stdio_server() {
+                if let Err(e) = ailang_mcp::run_stdio_server_with_policy(policy) {
                     eprintln!("MCP server error: {}", e);
                     process::exit(1);
                 }
@@ -86,9 +97,14 @@ fn main() {
                 return;
             }
             Commands::Run { file } => {
+                if let Err(e) = policy.check_read(&file) {
+                    let err = ErrorOutput::from(&e);
+                    eprintln!("{}", serde_json::to_string(&err).unwrap());
+                    process::exit(err.code);
+                }
                 match std::fs::read_to_string(&file) {
                     Ok(content) => {
-                        execute_expr(&content, &cli.output);
+                        execute_expr(&content, &cli.output, policy);
                     }
                     Err(e) => {
                         emit_error(&format!("Cannot read file '{}': {}", file, e), 5);
@@ -101,17 +117,17 @@ fn main() {
     }
 
     if let Some(expr) = cli.expression {
-        execute_expr(&expr, &cli.output);
+        execute_expr(&expr, &cli.output, policy);
     } else {
         eprintln!("Usage: ailang \"expression\" or ailang run script.al");
         eprintln!("       ailang serve --mcp  (start MCP server)");
-        eprintln!("       ailang bench \"expr\" (benchmark token savings)");
+        eprintln!("       ailang bench \"expr\" (source size and parse latency)");
         eprintln!("       ailang ref          (quick reference)");
         process::exit(1);
     }
 }
 
-fn execute_expr(expr: &str, output_format: &str) {
+fn execute_expr(expr: &str, output_format: &str, policy: SecurityPolicy) {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create async runtime");
     let handle = rt.handle().clone();
 
@@ -127,9 +143,17 @@ fn execute_expr(expr: &str, output_format: &str) {
 
     // Evaluate
     let mut ctx = Context::new();
+    ctx.policy = policy;
     match eval_program(&program, &mut ctx, &handle) {
         Ok(values) => {
-            output_values(&values, output_format);
+            if ctx.policy.dry_run {
+                println!("{}", serde_json::json!({
+                    "result": values.iter().map(value_to_json).collect::<Vec<_>>(),
+                    "dry_run": ctx.dry_run_entries,
+                }));
+            } else {
+                output_values(&values, output_format);
+            }
         }
         Err(e) => {
             let err = ErrorOutput::from(&e);
@@ -223,56 +247,29 @@ fn emit_error(msg: &str, code: i32) {
 }
 
 fn run_benchmark(expr: &str) {
-    println!("\n=== ailang Ultra Token Benchmark ===");
-    println!("Expression: {}", expr);
-
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create async runtime");
-    let handle = rt.handle().clone();
-
     let start = Instant::now();
-    let parse_res = parse(expr);
-    let parse_time = start.elapsed();
-
-    let exec_time = if let Ok(ref p) = parse_res {
-        let mut ctx = Context::new();
-        let exec_start = Instant::now();
-        let _ = eval_pipeline(p, &mut ctx, &handle);
-        Some(exec_start.elapsed())
-    } else {
-        None
-    };
-
-    let ailang_tokens = estimate_tokens(expr);
-    let python_tokens = (ailang_tokens as f64 * 4.8).round() as usize + 35;
-    let powershell_tokens = (ailang_tokens as f64 * 4.1).round() as usize + 25;
-
-    let savings_py = ((python_tokens - ailang_tokens) as f64 / python_tokens as f64 * 100.0).round();
-    let savings_ps = ((powershell_tokens - ailang_tokens) as f64 / powershell_tokens as f64 * 100.0).round();
-
-    println!("\nEstimated Tokens:");
-    println!("  * ailang:      {:>4} tokens", ailang_tokens);
-    println!("  * Python:      {:>4} tokens  (~{:.0}% savings)", python_tokens, savings_py);
-    println!("  * PowerShell:  {:>4} tokens  (~{:.0}% savings)", powershell_tokens, savings_ps);
-
-    println!("\nPerformance:");
-    println!("  * Parse latency:   {:?}", parse_time);
-    if let Some(t) = exec_time {
-        println!("  * Exec latency:    {:?}", t);
+    let parsed = parse_program(expr);
+    let elapsed = start.elapsed();
+    match parsed {
+        Ok(_) => println!("{}", serde_json::json!({
+            "source_bytes": expr.len(),
+            "source_chars": expr.chars().count(),
+            "parse_ns": elapsed.as_nanos() as u64,
+            "executed": false,
+            "tokens": null,
+            "note": "Token counts and savings require a real model tokenizer and equivalent baseline programs; no estimates are fabricated.",
+        })),
+        Err(e) => {
+            let err = ErrorOutput::from(&e);
+            eprintln!("{}", serde_json::to_string(&err).unwrap());
+            process::exit(err.code);
+        }
     }
-    println!("====================================\n");
-}
-
-fn estimate_tokens(s: &str) -> usize {
-    let words = s.split_whitespace().count();
-    let punct = s.chars().filter(|c| c.is_ascii_punctuation()).count();
-    let chars = s.len();
-    let est = (chars / 4).max(words + (punct + 1) / 2);
-    est.max(1)
 }
 
 fn print_reference() {
     println!(r#"
-ailang ultra reference — paste this in your AI system prompt (<65 tokens):
+ailang ultra reference — compact agent reference:
 
   ailang "<expression>"
   macros: search <dir> <pat> | tree [dir] [depth] | head <n> [f] | tail <n> [f]

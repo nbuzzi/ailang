@@ -47,7 +47,7 @@ pub async fn download(args: &[Value], _input: Option<Value>) -> AilangResult<Vec
         .await
         .map_err(|e| AilangError::HttpError(e.to_string()))?;
 
-    std::fs::write(&dest, &bytes)?;
+    crate::fs::atomic_write(std::path::Path::new(&dest), &bytes)?;
     Ok(vec![Value::Str(dest)])
 }
 

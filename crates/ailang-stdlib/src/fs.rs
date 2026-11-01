@@ -27,19 +27,15 @@ pub fn write(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    std::fs::write(&path, content)?;
+    atomic_write(Path::new(&path), content.as_bytes())?;
     Ok(vec![])
 }
 
 /// glob("pattern") → Stream<FileEntry>
 pub fn glob(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
-    let pattern = get_str_arg(args, 0, "glob")?;
-
-    let base = if pattern.starts_with('/') || pattern.contains(':') {
-        Path::new("").to_path_buf()
-    } else {
-        std::env::current_dir()?
-    };
+    let pattern = get_str_arg(args, 0, "glob")?.replace('\\', "/");
+    let base = std::env::current_dir()?;
+    let root = glob_root(&pattern)?;
 
     let glob = Glob::new(&pattern)
         .map_err(|e| AilangError::RuntimeError { stage: "glob".into(), msg: e.to_string() })?;
@@ -49,8 +45,10 @@ pub fn glob(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>> {
         .map_err(|e| AilangError::RuntimeError { stage: "glob".into(), msg: e.to_string() })?;
 
     let mut results = Vec::new();
-    for entry in WalkDir::new(&base).into_iter().filter_map(|e| e.ok()) {
-        let rel = entry.path().strip_prefix(&base).unwrap_or(entry.path());
+    for entry in WalkDir::new(&root).sort_by_file_name().into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() { continue; }
+        let rel = if Path::new(&pattern).is_absolute() { entry.path() }
+            else { entry.path().strip_prefix(&base).unwrap_or(entry.path()) };
         let rel_str = rel.to_string_lossy().replace('\\', "/");
         if set.is_match(&rel_str) {
             results.push(Value::FileEntry(path_to_entry(entry.path())?));
@@ -88,7 +86,7 @@ pub fn search(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>>
 
     let walker = WalkDir::new(dir).into_iter().filter_entry(|e| {
         let name = e.file_name().to_string_lossy();
-        !name.starts_with('.') && name != "target" && name != "node_modules" && name != "dist" && name != "build"
+        e.depth() == 0 || (!name.starts_with('.') && name != "target" && name != "node_modules" && name != "dist" && name != "build")
     });
 
     for entry in walker.filter_map(|e| e.ok()) {
@@ -235,7 +233,7 @@ pub fn lines_cmd(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value
 
 /// cp("src", "dst") — copy file or directory
 pub fn cp(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
-    let dst = get_str_arg(args, 0, "cp")?;
+    let dst = get_str_arg(args, if input.is_some() { 0 } else { 1 }, "cp")?;
     let src = match input {
         Some(Value::FileEntry(fe)) => fe.path,
         Some(Value::Str(s)) => s,
@@ -259,7 +257,7 @@ pub fn cp(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
 
 /// mv("src", "dst")
 pub fn mv(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Value>> {
-    let dst = get_str_arg(args, 0, "mv")?;
+    let dst = get_str_arg(args, if input.is_some() { 0 } else { 1 }, "mv")?;
     let src = match input {
         Some(Value::Str(s)) => s,
         Some(Value::FileEntry(fe)) => fe.path,
@@ -333,7 +331,7 @@ pub fn replace_block(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<
         new_content.push_str(&content[..pos]);
         new_content.push_str(&replacement);
         new_content.push_str(&content[pos + target.len()..]);
-        std::fs::write(&path, &new_content)?;
+        atomic_write(Path::new(&path), new_content.as_bytes())?;
         return Ok(vec![Value::Bool(true)]);
     }
 
@@ -346,8 +344,7 @@ pub fn replace_block(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<
     }
 
     let mut matches = Vec::new();
-    for i in 0..=content_lines.len().saturating_sub(target_lines.len()) {
-        let window = &content_lines[i..i + target_lines.len()];
+    for (i, window) in content_lines.windows(target_lines.len()).enumerate() {
         let matches_fuzzy = window.iter().zip(target_lines.iter()).all(|(w, t)| {
             w.trim() == t.trim()
         });
@@ -379,7 +376,7 @@ pub fn replace_block(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<
     if content.ends_with('\n') {
         new_content.push('\n');
     }
-    std::fs::write(&path, &new_content)?;
+    atomic_write(Path::new(&path), new_content.as_bytes())?;
     Ok(vec![Value::Bool(true)])
 }
 
@@ -406,7 +403,7 @@ pub fn insert_after(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<V
             out.push('\n');
         }
         out.push_str(&file_content[next_newline..]);
-        std::fs::write(&path, &out)?;
+        atomic_write(Path::new(&path), out.as_bytes())?;
         return Ok(vec![Value::Bool(true)]);
     }
 
@@ -422,7 +419,7 @@ pub fn insert_after(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<V
         if file_content.ends_with('\n') {
             out.push('\n');
         }
-        std::fs::write(&path, &out)?;
+        atomic_write(Path::new(&path), out.as_bytes())?;
         return Ok(vec![Value::Bool(true)]);
     }
 
@@ -453,7 +450,7 @@ pub fn insert_before(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<
             out.push('\n');
         }
         out.push_str(&file_content[prev_newline..]);
-        std::fs::write(&path, &out)?;
+        atomic_write(Path::new(&path), out.as_bytes())?;
         return Ok(vec![Value::Bool(true)]);
     }
 
@@ -469,7 +466,7 @@ pub fn insert_before(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<
         if file_content.ends_with('\n') {
             out.push('\n');
         }
-        std::fs::write(&path, &out)?;
+        atomic_write(Path::new(&path), out.as_bytes())?;
         return Ok(vec![Value::Bool(true)]);
     }
 
@@ -483,14 +480,14 @@ pub fn prepend(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Value>
     let path = get_str_arg(args, 0, "prepend")?;
     let content_to_prepend = get_str_arg(args, 1, "prepend")?;
 
-    let existing = read_file_string(Path::new(&path)).unwrap_or_default();
+    let existing = read_optional_file(Path::new(&path))?;
     let mut out = String::with_capacity(content_to_prepend.len() + existing.len() + 2);
     out.push_str(&content_to_prepend);
     if !content_to_prepend.ends_with('\n') {
         out.push('\n');
     }
     out.push_str(&existing);
-    std::fs::write(&path, &out)?;
+    atomic_write(Path::new(&path), out.as_bytes())?;
     Ok(vec![Value::Bool(true)])
 }
 
@@ -499,7 +496,7 @@ pub fn append_file(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Va
     let path = get_str_arg(args, 0, "append")?;
     let content_to_append = get_str_arg(args, 1, "append")?;
 
-    let existing = read_file_string(Path::new(&path)).unwrap_or_default();
+    let existing = read_optional_file(Path::new(&path))?;
     let mut out = String::with_capacity(existing.len() + content_to_append.len() + 2);
     out.push_str(&existing);
     if !existing.is_empty() && !existing.ends_with('\n') {
@@ -509,7 +506,7 @@ pub fn append_file(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Va
     if !content_to_append.ends_with('\n') {
         out.push('\n');
     }
-    std::fs::write(&path, &out)?;
+    atomic_write(Path::new(&path), out.as_bytes())?;
     Ok(vec![Value::Bool(true)])
 }
 
@@ -521,7 +518,7 @@ pub fn replace_all(args: &[Value], _input: Option<Value>) -> AilangResult<Vec<Va
 
     let content = read_file_string(Path::new(&path))?;
     let out = content.replace(&target, &replacement);
-    std::fs::write(&path, &out)?;
+    atomic_write(Path::new(&path), out.as_bytes())?;
     Ok(vec![Value::Bool(true)])
 }
 
@@ -535,63 +532,115 @@ pub fn patch_file(args: &[Value], input: Option<Value>) -> AilangResult<Vec<Valu
 
     let original = read_file_string(Path::new(&path))?;
     let patched = apply_unified_patch(&original, &diff)?;
-    std::fs::write(&path, &patched)?;
+    atomic_write(Path::new(&path), patched.as_bytes())?;
     Ok(vec![Value::Bool(true)])
 }
 
 fn apply_unified_patch(original: &str, diff: &str) -> AilangResult<String> {
-    let orig_lines: Vec<&str> = original.lines().collect();
-    let mut result_lines: Vec<String> = Vec::new();
-    let mut orig_idx = 0;
-
-    for line in diff.lines() {
-        if line.starts_with("---") || line.starts_with("+++") {
-            continue;
-        }
-        if line.starts_with("@@") {
-            if let Some(minus_idx) = line.find('-') {
-                let rest = &line[minus_idx + 1..];
-                let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                if let Ok(line_num) = num_str.parse::<usize>() {
-                    let target = line_num.saturating_sub(1);
-                    while orig_idx < target && orig_idx < orig_lines.len() {
-                        result_lines.push(orig_lines[orig_idx].to_string());
-                        orig_idx += 1;
-                    }
+    let fail = |msg: &str| AilangError::EditError { msg: msg.into() };
+    let header = Regex::new(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$")
+        .map_err(|e| fail(&e.to_string()))?;
+    let source: Vec<&str> = original.lines().collect();
+    let patch: Vec<&str> = diff.lines().collect();
+    let mut result = Vec::new();
+    let (mut cursor, mut i, mut hunks) = (0, 0, 0);
+    let mut final_newline = original.is_empty() || original.ends_with('\n');
+    while i < patch.len() && (patch[i].starts_with("--- ") || patch[i].starts_with("+++ ")) { i += 1; }
+    while i < patch.len() {
+        let captures = header.captures(patch[i]).ok_or_else(|| fail("Expected unified diff hunk header"))?;
+        let number = |n: usize, default: usize| -> AilangResult<usize> {
+            captures.get(n).map(|m| m.as_str().parse().map_err(|_| fail("Invalid hunk range")))
+                .unwrap_or(Ok(default))
+        };
+        let (old_start, old_count, new_start, new_count) = (number(1, 0)?, number(2, 1)?, number(3, 0)?, number(4, 1)?);
+        let target = if old_count == 0 { old_start } else { old_start.checked_sub(1).ok_or_else(|| fail("Invalid old hunk start"))? };
+        if target < cursor || target > source.len() { return Err(fail("Overlapping or out-of-range hunk")); }
+        result.extend(source[cursor..target].iter().map(|s| s.to_string()));
+        cursor = target;
+        let new_target = if new_count == 0 { new_start } else { new_start.checked_sub(1).ok_or_else(|| fail("Invalid new hunk start"))? };
+        if result.len() != new_target { return Err(fail("New hunk position does not match output")); }
+        i += 1;
+        let (mut removed, mut added) = (0, 0);
+        let mut previous = ' ';
+        while removed < old_count || added < new_count {
+            let line = patch.get(i).ok_or_else(|| fail("Truncated patch hunk"))?;
+            if *line == "\\ No newline at end of file" {
+                if previous != '-' { final_newline = false; }
+                i += 1;
+                continue;
+            }
+            let prefix = line.chars().next().ok_or_else(|| fail("Missing hunk line prefix"))?;
+            if !matches!(prefix, ' ' | '-' | '+') { return Err(fail("Invalid hunk line prefix")); }
+            let text = &line[1..];
+            match prefix {
+                ' ' | '-' => {
+                    if source.get(cursor).copied() != Some(text) { return Err(fail("Patch context/removal does not match the file")); }
+                    cursor += 1;
+                    removed += 1;
+                    if prefix == ' ' { result.push(text.into()); added += 1; }
                 }
+                '+' => { result.push(text.into()); added += 1; }
+                _ => return Err(fail("Invalid hunk line prefix")),
             }
-            continue;
+            if removed > old_count || added > new_count { return Err(fail("Hunk line counts do not match header")); }
+            previous = prefix;
+            i += 1;
         }
-
-        if let Some(added) = line.strip_prefix('+') {
-            result_lines.push(added.to_string());
-        } else if line.starts_with('-') {
-            if orig_idx < orig_lines.len() {
-                orig_idx += 1;
-            }
-        } else if let Some(context) = line.strip_prefix(' ') {
-            if orig_idx < orig_lines.len() {
-                result_lines.push(orig_lines[orig_idx].to_string());
-                orig_idx += 1;
-            } else {
-                result_lines.push(context.to_string());
-            }
+        if patch.get(i).copied() == Some("\\ No newline at end of file") {
+            if previous != '-' { final_newline = false; }
+            i += 1;
         }
+        hunks += 1;
     }
-
-    while orig_idx < orig_lines.len() {
-        result_lines.push(orig_lines[orig_idx].to_string());
-        orig_idx += 1;
-    }
-
-    let mut out = result_lines.join("\n");
-    if original.ends_with('\n') {
-        out.push('\n');
-    }
-    Ok(out)
+    if hunks == 0 { return Err(fail("Patch contains no hunks")); }
+    result.extend(source[cursor..].iter().map(|s| s.to_string()));
+    let newline = if original.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut output = result.join(newline);
+    if final_newline && !result.is_empty() { output.push_str(newline); }
+    Ok(output)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/// Find the directory preceding the first glob metacharacter. This avoids
+/// walking the entire cwd when the pattern names a smaller or absolute root.
+pub fn glob_root(pattern: &str) -> std::io::Result<std::path::PathBuf> {
+    let pattern = pattern.replace('\\', "/");
+    let end = pattern.find(['*', '?', '[', '{']).unwrap_or(pattern.len());
+    let prefix = &pattern[..end];
+    let root = prefix.rfind('/').map(|i| &prefix[..=i]).unwrap_or(".");
+    let path = Path::new(root);
+    Ok(if path.is_absolute() { path.into() } else { std::env::current_dir()?.join(path) })
+}
+
+/// Replace a file only after its complete contents have been written. Resolve
+/// an existing link so editing through it preserves the link itself.
+pub fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let resolved = match std::fs::symlink_metadata(path) {
+        Ok(_) => std::fs::canonicalize(path)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(e) => return Err(e),
+    };
+    let parent = resolved.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(content)?;
+    if let Ok(metadata) = std::fs::metadata(&resolved) {
+        temp.as_file().set_permissions(metadata.permissions())?;
+    }
+    temp.as_file().sync_all()?;
+    temp.persist(&resolved).map_err(|e| e.error)?;
+    Ok(())
+}
+
+fn read_optional_file(path: &Path) -> std::io::Result<String> {
+    match read_file_string(path) {
+        Ok(content) => Ok(content),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e),
+    }
+}
 
 pub fn read_file_string(path: &Path) -> std::io::Result<String> {
     let bytes = std::fs::read(path)?;
