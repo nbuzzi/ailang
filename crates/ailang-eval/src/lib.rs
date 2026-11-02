@@ -461,7 +461,8 @@ fn input_to_list(input: Option<Value>) -> Vec<Value> {
 
 fn collapse_stream(stream: Vec<Value>) -> Option<Value> {
     match stream.len() {
-        0 => None,
+        // A previous stage produced no items; it is not a missing pipeline input.
+        0 => Some(Value::List(stream)),
         1 => Some(stream.into_iter().next().unwrap()),
         _ => Some(Value::List(stream)),
     }
