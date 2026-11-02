@@ -504,3 +504,37 @@ fn patch_preserves_crlf_and_supports_insertions_and_multiple_hunks() {
         "new\n"
     );
 }
+
+#[test]
+fn empty_pipelines_remain_valid_input() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), "present\n").unwrap();
+    for expr in [
+        "search . missing | head 20 | count",
+        "glob absent-* | head 2 | tail 1 | count",
+        "'present' | grep missing | tail 2 | head 1 | count",
+        "'[]' | json | filter(.level > 20) | head 2 | count",
+    ] {
+        assert_eq!(success(cli(dir.path(), &[expr])).trim(), "0", "{expr}");
+    }
+    for expr in ["head 2", "tail 2"] {
+        let out = cli(dir.path(), &[expr]);
+        assert!(!out.status.success(), "{expr} must still require input");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("piped input"));
+    }
+}
+
+#[test]
+fn mcp_empty_pipeline_is_success_but_missing_input_is_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let responses = mcp(dir.path(), &[], &[
+        call(1, "'present' | grep missing | head 2 | tail 1 | count"),
+        call(2, "head 2"),
+        call(3, "'[]' | json | filter(.level > 20) | tail 2 | count"),
+    ]);
+    assert_eq!(responses[0]["result"]["isError"], false);
+    assert_eq!(responses[0]["result"]["content"][0]["text"], "0");
+    assert_eq!(responses[1]["result"]["isError"], true);
+    assert_eq!(responses[2]["result"]["isError"], false);
+    assert_eq!(responses[2]["result"]["content"][0]["text"], "0");
+}

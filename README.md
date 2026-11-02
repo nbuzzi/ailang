@@ -175,6 +175,8 @@ sequenceDiagram
 
 An ailang script consists of one or more pipelines separated by semicolons (`;`). Data flows from left to right through pipeline stages separated by `|`.
 
+An upstream stage that finds no results passes an empty list downstream. For example, `search src TODO | head 20 | count` returns `0` when there are no matches. This differs from calling `head` or `tail` with neither piped input nor a file, which remains an error.
+
 ```
 <source> | <transform> | <filter> | <sink>
 ```
